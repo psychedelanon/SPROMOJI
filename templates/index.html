@@ -8,20 +8,15 @@
 </head>
 <body>
     <h1>Spromoji</h1>
-    <!-- Avatar image upload -->
     <input type="file" id="avatarInput" accept="image/*" />
-    <br />
-    <video id="video" style="display: none;" playsinline></video>
-    <img id="avatar" alt="Avatar" style="display:none;" />
-    <canvas id="canvas" width="640" height="480"></canvas>
+    <div id="stage">
+        <canvas id="avatarCanvas"></canvas>
+        <video id="cam" autoplay playsinline muted hidden></video>
+    </div>
     <br />
     <button id="startBtn">Start Recording</button>
 
-    <!-- External libraries -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="/static/script.js"></script>
+    <script type="module" src="/static/script.js"></script>
 </body>
 </html>
