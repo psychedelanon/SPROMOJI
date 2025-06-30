@@ -1,7 +1,1 @@
-# SPROMOJI
-
-A project for emoji-related functionality.
-
-## Getting Started
-
-This project is currently in development. 
+Spromoji is a Telegram mini-application inspired by Apple's Memoji. It will allow users to animate their profile picture (PFP) – specifically Sproto Gremlins NFT avatars – so that the avatar mirrors the user's facial expressions in real time. 
