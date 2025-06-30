@@ -4,6 +4,17 @@ let Camera = null;
 let THREE = null;
 
 console.log('🌟 SPROMOJI WebApp starting...');
+console.log('🌍 Current URL:', window.location.href);
+console.log('🔍 URL Search params:', window.location.search);
+
+// Parse URL parameters immediately for debugging
+const urlParams = new URLSearchParams(window.location.search);
+const avatarParam = urlParams.get('avatar');
+console.log('📷 Avatar parameter found:', !!avatarParam);
+if (avatarParam) {
+  console.log('📷 Raw avatar param:', avatarParam);
+  console.log('📷 Decoded avatar param:', decodeURIComponent(avatarParam));
+}
 
 // IMMEDIATE emergency timeout - force hide loading NOW
 setTimeout(() => {
@@ -459,13 +470,25 @@ async function main() {
 function startBasicMode() {
   console.log('🔄 Starting basic mode without face tracking...');
   
+  // Debug current URL and parameters
+  console.log('📍 Current URL:', window.location.href);
+  console.log('📍 Search params:', window.location.search);
+  
   // Load avatar from URL parameters (Telegram profile photo)
   const urlParams = new URLSearchParams(window.location.search);
   const avatarParam = urlParams.get('avatar');
   
+  console.log('🔍 Raw avatar param:', avatarParam);
+  
   if (avatarParam) {
-    console.log('📷 Loading Telegram avatar in basic mode:', avatarParam);
-    loadBasicAvatar(avatarParam);
+    // Decode the URL parameter properly
+    const decodedAvatarUrl = decodeURIComponent(avatarParam);
+    console.log('📷 Decoded avatar URL:', decodedAvatarUrl);
+    console.log('📷 Loading Telegram avatar in basic mode...');
+    loadBasicAvatar(decodedAvatarUrl);
+  } else {
+    console.log('❌ No avatar parameter found in URL');
+    updateStatus('No profile photo found. Please upload an avatar image.');
   }
   
   // Set up file input for avatar upload
@@ -524,27 +547,71 @@ async function loadBasicAvatar(src) {
   try {
     updateStatus('Loading avatar image...');
     console.log('🖼️ Loading basic avatar from:', src);
+    console.log('🔍 Image URL validation - starts with https:', src.startsWith('https://'));
+    console.log('🔍 Image URL validation - contains api.telegram.org:', src.includes('api.telegram.org'));
     
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    
+    // Try without crossOrigin first for Telegram images (might cause CORS issues)
+    if (src.includes('api.telegram.org')) {
+      console.log('🔧 Loading Telegram image without crossOrigin...');
+      // Don't set crossOrigin for Telegram images to avoid CORS issues
+    } else {
+      console.log('🔧 Loading external image with crossOrigin...');
+      img.crossOrigin = 'anonymous';
+    }
     
     await new Promise((resolve, reject) => {
+      let timeoutHandle;
+      
       img.onload = () => {
+        clearTimeout(timeoutHandle);
         console.log('✅ Avatar loaded successfully');
+        console.log('📏 Image dimensions:', img.width, 'x', img.height);
         resolve();
       };
+      
       img.onerror = (error) => {
+        clearTimeout(timeoutHandle);
         console.error('❌ Avatar load failed:', error);
-        reject(error);
+        console.error('❌ Failed URL was:', src);
+        reject(new Error(`Failed to load image: ${error.message || 'Unknown error'}`));
       };
+      
+      // Set a timeout for image loading
+      timeoutHandle = setTimeout(() => {
+        console.error('⏰ Avatar loading timeout after 10 seconds');
+        reject(new Error('Image loading timeout'));
+      }, 10000);
+      
+      console.log('🔄 Setting image src...');
       img.src = src;
     });
     
+    // Ensure canvas exists and is ready
+    if (!canvas) {
+      throw new Error('Canvas element not found');
+    }
+    
     // Set canvas size and draw image
-    canvas.width = Math.min(img.width, 500);
-    canvas.height = Math.min(img.height, 500);
+    const maxSize = 500;
+    const aspectRatio = img.height / img.width;
+    
+    if (img.width > img.height) {
+      canvas.width = Math.min(img.width, maxSize);
+      canvas.height = canvas.width * aspectRatio;
+    } else {
+      canvas.height = Math.min(img.height, maxSize);
+      canvas.width = canvas.height / aspectRatio;
+    }
+    
+    console.log('📐 Canvas size set to:', canvas.width, 'x', canvas.height);
     
     const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Could not get canvas 2D context');
+    }
+    
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     
@@ -552,11 +619,25 @@ async function loadBasicAvatar(src) {
     avatarImg = img;
     
     updateStatus('Avatar loaded! Click "Start Recording" to record a video.');
-    console.log('🎨 Avatar drawn on canvas');
+    console.log('🎨 Avatar drawn on canvas successfully');
     
   } catch (error) {
     console.error('❌ Failed to load avatar:', error);
-    updateStatus('Failed to load avatar. Please try uploading an image file.');
+    console.error('❌ Error details:', error.message);
+    
+    // Try a more specific error message
+    if (error.message.includes('CORS')) {
+      updateStatus('CORS error loading image. Please upload an image file instead.');
+    } else if (error.message.includes('timeout')) {
+      updateStatus('Image loading timeout. Please check your connection or upload a file.');
+    } else {
+      updateStatus('Failed to load avatar. Please try uploading an image file.');
+    }
+    
+    // Show the file upload as alternative
+    if (avatarInput && avatarInput.style) {
+      avatarInput.style.display = 'block';
+    }
   }
 }
 
