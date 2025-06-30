@@ -1,6 +1,7 @@
 """Telegram bot and Flask app for the Spromoji WebApp."""
 import os
 import asyncio
+import threading
 from dotenv import load_dotenv
 
 from flask import Flask, request, render_template
@@ -20,6 +21,19 @@ application = Application.builder().token(TOKEN).build()
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
+# Global event loop for async operations
+loop = None
+loop_thread = None
+
+
+def run_async(coro):
+    """Run async coroutine in the background event loop."""
+    if loop and loop.is_running():
+        asyncio.run_coroutine_threadsafe(coro, loop)
+    else:
+        # Fallback: run in new event loop
+        asyncio.run(coro)
+
 
 @app.route("/")
 def index():
@@ -30,9 +44,13 @@ def index():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """Process incoming Telegram updates sent via webhook."""
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    asyncio.create_task(application.process_update(update))
-    return "OK"
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        run_async(application.process_update(update))
+        return "OK"
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return "Error", 500
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -53,19 +71,39 @@ application.add_handler(CommandHandler("start", start))
 async def setup_webhook():
     """Set up the webhook for production."""
     if WEBHOOK_URL:
-        await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        print(f"Webhook set to: {WEBHOOK_URL}/webhook")
+        webhook_url = WEBHOOK_URL
+        if not webhook_url.startswith('http'):
+            webhook_url = f"https://{webhook_url}"
+        
+        await application.bot.set_webhook(f"{webhook_url}/webhook")
+        print(f"Webhook set to: {webhook_url}/webhook")
     else:
         print("No WEBHOOK_URL set, skipping webhook setup")
 
 
+def run_event_loop():
+    """Run event loop in a separate thread."""
+    global loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
 if __name__ == "__main__":
+    # Start event loop in separate thread for async operations
+    loop_thread = threading.Thread(target=run_event_loop, daemon=True)
+    loop_thread.start()
+    
+    # Wait a moment for loop to start
+    import time
+    time.sleep(0.1)
+    
     # Initialize the application
-    asyncio.get_event_loop().run_until_complete(application.initialize())
+    run_async(application.initialize())
     
     # Set up webhook if URL is provided
     if WEBHOOK_URL:
-        asyncio.get_event_loop().run_until_complete(setup_webhook())
+        run_async(setup_webhook())
     else:
         print("Running without webhook (for local development)")
 
