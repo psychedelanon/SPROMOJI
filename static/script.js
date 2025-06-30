@@ -107,7 +107,10 @@ async function setupAvatarFromPhoto(src) {
 }
 
 async function main() {
-  const userPhoto = tg?.initDataUnsafe?.user?.photo_url;
+  const urlParams = new URLSearchParams(window.location.search);
+  const startParams = new URLSearchParams(tg?.initDataUnsafe?.start_param || '');
+  const avatarParam = startParams.get('avatar') || urlParams.get('avatar');
+  const userPhoto = avatarParam || tg?.initDataUnsafe?.user?.photo_url;
   if (userPhoto) {
     await setupAvatarFromPhoto(userPhoto);
   }
