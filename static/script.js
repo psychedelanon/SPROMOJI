@@ -1,681 +1,428 @@
-// Global variables for MediaPipe
-let FaceMesh = null;
-let Camera = null;
-let THREE = null;
+// SPROMOJI - Live Avatar Animation
+// Clean implementation with MediaPipe Face Mesh and 2D Canvas
 
-console.log('🌟 SPROMOJI WebApp starting...');
-console.log('🌍 Current URL:', window.location.href);
-console.log('🔍 URL Search params:', window.location.search);
+console.log('[preview] SPROMOJI starting...');
 
-// Parse URL parameters immediately for debugging
-const urlParams = new URLSearchParams(window.location.search);
-const avatarParam = urlParams.get('avatar');
-console.log('📷 Avatar parameter found:', !!avatarParam);
-if (avatarParam) {
-  console.log('📷 Raw avatar param:', avatarParam);
-  console.log('📷 Decoded avatar param:', decodeURIComponent(avatarParam));
-}
-
-// IMMEDIATE emergency timeout - force hide loading NOW
-setTimeout(() => {
-  console.log('🚨 EMERGENCY: Force hiding loading screen NOW');
-  const loading = document.getElementById('loading');
-  if (loading) {
-    loading.style.display = 'none';
-  }
-  const status = document.getElementById('status');
-  if (status) {
-    status.textContent = 'Basic mode active. Upload an avatar image to continue.';
-  }
-}, 1000);
-
-// Load MediaPipe asynchronously
-async function loadMediaPipe() {
-  try {
-    console.log('📦 Attempting MediaPipe imports...');
-    const [faceModule, cameraModule, threeModule] = await Promise.all([
-      import('https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js').catch(() => null),
-      import('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js').catch(() => null),
-      import('https://unpkg.com/three@0.161.1/build/three.module.js').catch(() => null)
-    ]);
-    
-    if (faceModule && cameraModule && threeModule) {
-      FaceMesh = faceModule.FaceMesh;
-      Camera = cameraModule.Camera;
-      THREE = threeModule.default || threeModule;
-      console.log('✅ All imports successful');
-      return true;
-    } else {
-      console.log('❌ Some imports failed');
-      return false;
-    }
-  } catch (error) {
-    console.error('❌ Import failed:', error);
-    return false;
-  }
-}
-
-const tg = window.Telegram.WebApp;
-if (tg && tg.expand) tg.expand();
-
-const canvas = document.getElementById('avatarCanvas');
+// DOM elements
 const cam = document.getElementById('cam');
+const avatarCanvas = document.getElementById('avatarCanvas');
+const ctx = avatarCanvas.getContext('2d');
 const avatarInput = document.getElementById('avatarInput');
 const startBtn = document.getElementById('startBtn');
 const loadingIndicator = document.getElementById('loading');
 const statusText = document.getElementById('status');
 
-console.log('DOM elements found:', {
-  canvas: !!canvas,
-  cam: !!cam,
-  avatarInput: !!avatarInput,
-  startBtn: !!startBtn,
-  loadingIndicator: !!loadingIndicator,
-  statusText: !!statusText
-});
-
+// Global state
 let avatarImg = null;
-let renderer, scene, camera3D, mesh;
-let mediaRecorder = null;
-let recordedChunks = [];
+let avatarLandmarks = null; // face landmarks from static avatar analysis
+let faceMesh = null;
+let camera = null;
 let isRecording = false;
 
-function updateStatus(message) {
-  if (statusText) {
-    statusText.textContent = message;
-  }
-  console.log('📱 Status:', message);
-}
+// Telegram WebApp initialization
+const tg = window.Telegram?.WebApp;
+if (tg && tg.expand) tg.expand();
 
-function hideLoading() {
-  if (loadingIndicator) {
-    loadingIndicator.style.display = 'none';
-    console.log('✅ Loading indicator hidden');
-  }
-}
-
-// Super aggressive emergency timeout
-setTimeout(() => {
-  console.log('🚨 SUPER EMERGENCY: Forcing app to work');
-  hideLoading();
-  updateStatus('App ready! Upload an avatar image to continue.');
-  startBasicMode();
-}, 500);
-
-// Initial status update
-updateStatus('Starting SPROMOJI...');
-
-function resizeCanvas() {
-  canvas.width = canvas.clientWidth;
-  canvas.height = canvas.clientHeight;
-  if (renderer) {
-    renderer.setSize(canvas.width, canvas.height);
-    camera3D.aspect = canvas.width / canvas.height;
-    camera3D.updateProjectionMatrix();
-  }
-}
-window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
-
+/**
+ * Load avatar image with CORS support
+ * @param {string} src - Image URL
+ * @returns {Promise<HTMLImageElement>}
+ */
 async function loadAvatar(src) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    
-    img.onload = () => {
-      console.log('Avatar image loaded successfully');
-      resolve(img);
-    };
-    
-    img.onerror = (error) => {
-      console.error('Failed to load avatar image:', error);
-      console.error('Image src was:', src);
-      reject(new Error('Failed to load avatar image'));
-    };
-    
-    img.src = src;
-  });
-}
-
-async function initScene() {
-  renderer = new THREE.WebGLRenderer({ canvas, alpha: true });
-  scene = new THREE.Scene();
-  camera3D = new THREE.PerspectiveCamera(
-    45,
-    canvas.width / canvas.height,
-    0.1,
-    100
-  );
-  camera3D.position.z = 2;
-
-  const tex = new THREE.Texture(avatarImg);
-  tex.needsUpdate = true;
-  const geo = new THREE.PlaneGeometry(
-    1,
-    avatarImg.height / avatarImg.width
-  );
-  const mat = new THREE.MeshBasicMaterial({
-    map: tex,
-    transparent: true,
-  });
-  mesh = new THREE.Mesh(geo, mat);
-  scene.add(mesh);
-}
-
-function animateMesh(pose, blink, mouthOpen) {
-  if (!mesh) return;
-  mesh.rotation.y = pose.yaw * 1.8;
-  mesh.rotation.x = pose.pitch * 1.8;
-  mesh.rotation.z = -pose.roll;
-  mesh.scale.y = mouthOpen ? 1.05 : 1;
-  if (blink) {
-    mesh.material.opacity = 0.7;
-    setTimeout(() => (mesh.material.opacity = 1), 100);
-  }
-  renderer.render(scene, camera3D);
-}
-
-const IDX_NOSE = 1,
-  IDX_LEFT = 234,
-  IDX_RIGHT = 454,
-  IDX_CHIN = 152,
-  IDX_FORE = 10;
-
-function estimatePose(l) {
-  const yaw = Math.atan2(l[IDX_RIGHT].x - l[IDX_LEFT].x, l[IDX_RIGHT].z - l[IDX_LEFT].z);
-  const pitch = Math.atan2(l[IDX_CHIN].y - l[IDX_FORE].y, l[IDX_CHIN].z - l[IDX_FORE].z);
-  const roll = Math.atan2(l[33].y - l[263].y, l[33].x - l[263].x);
-  return { yaw, pitch, roll };
-}
-
-function dist(a, b) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-function detectBlink(l) {
-  const left = dist(l[159], l[145]) / dist(l[33], l[133]);
-  const right = dist(l[386], l[374]) / dist(l[362], l[263]);
-  return (left + right) / 2 < 0.23;
-}
-
-function detectMouthOpen(l) {
-  const mouth = dist(l[13], l[14]);
-  const face = dist(l[10], l[152]);
-  return mouth / face > 0.08;
-}
-
-async function setupAvatarFromPhoto(src) {
-  try {
+    console.log('[preview] Loading avatar:', src);
     updateStatus('Loading avatar image...');
-    avatarImg = await loadAvatar(src);
-    if (!renderer) await initScene();
-    updateStatus('Avatar loaded! Move your face to see the animation.');
-    console.log('Avatar loaded and scene initialized');
-  } catch (error) {
-    console.error('Error loading avatar:', error);
-    updateStatus('Error loading avatar image. Please try another image.');
-  }
+    
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        
+        img.onload = () => {
+            console.log('[preview] Avatar loaded, size:', img.width, 'x', img.height);
+            
+            // Resize canvas to match image aspect ratio
+            const maxSize = 400;
+            const scale = Math.min(maxSize / img.width, maxSize / img.height);
+            avatarCanvas.width = img.width * scale;
+            avatarCanvas.height = img.height * scale;
+            
+            // Draw initial image
+            ctx.drawImage(img, 0, 0, avatarCanvas.width, avatarCanvas.height);
+            
+            avatarImg = img;
+            
+            // Analyze avatar for face landmarks
+            analyzeAvatarFace(img);
+            
+            resolve(img);
+        };
+        
+        img.onerror = (error) => {
+            console.error('[preview] Failed to load avatar:', error);
+            reject(new Error('Failed to load avatar image'));
+        };
+        
+        img.src = src;
+    });
 }
 
+/**
+ * Analyze static avatar image to find face landmarks
+ * @param {HTMLImageElement} img - Avatar image
+ */
+function analyzeAvatarFace(img) {
+    if (!faceMesh) {
+        console.log('[preview] FaceMesh not ready, skipping avatar analysis');
+        return;
+    }
+    
+    console.log('[preview] Analyzing avatar face...');
+    
+    // Create a temporary canvas to analyze the avatar
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = img.width;
+    tempCanvas.height = img.height;
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(img, 0, 0);
+    
+    faceMesh.send({ image: tempCanvas });
+}
+
+/**
+ * Initialize webcam and face tracking
+ */
+async function initPreview() {
+    console.log('[preview] Initializing webcam and face tracking...');
+    updateStatus('Starting camera...');
+    
+    try {
+        // Request webcam access
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { 
+                width: { ideal: 640 }, 
+                height: { ideal: 480 },
+                facingMode: 'user'
+            }
+        });
+        
+        cam.srcObject = stream;
+        console.log('[preview] Webcam started');
+        
+        // Wait for MediaPipe scripts to load
+        await waitForMediaPipe();
+        
+        // Initialize face mesh
+        faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+        
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        faceMesh.onResults(onFaceResults);
+        
+        // Initialize camera feed
+        camera = new Camera(cam, {
+            onFrame: async () => {
+                if (faceMesh) {
+                    await faceMesh.send({ image: cam });
+                }
+            },
+            width: 640,
+            height: 480
+        });
+        
+        await camera.start();
+        console.log('[preview] Face tracking started');
+        updateStatus('Face tracking active - move your head to see avatar animation!');
+        hideLoading();
+        
+    } catch (error) {
+        console.error('[preview] Failed to initialize preview:', error);
+        updateStatus('Camera access denied or not available. Upload an image to continue.');
+        hideLoading();
+    }
+}
+
+/**
+ * Wait for MediaPipe scripts to load
+ */
+function waitForMediaPipe() {
+    return new Promise((resolve) => {
+        const checkLoaded = () => {
+            if (window.FaceMesh && window.Camera) {
+                resolve();
+            } else {
+                setTimeout(checkLoaded, 100);
+            }
+        };
+        checkLoaded();
+    });
+}
+
+/**
+ * Handle face detection results
+ * @param {Object} results - MediaPipe face mesh results
+ */
+function onFaceResults(results) {
+    // If this is avatar analysis (no live landmarks yet)
+    if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0 && !avatarLandmarks && !camera) {
+        avatarLandmarks = results.multiFaceLandmarks[0];
+        console.log('[preview] Avatar face landmarks captured');
+        updateStatus('Avatar face analyzed! Move your head to see animation.');
+        return;
+    }
+    
+    if (!avatarImg || !results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+        return;
+    }
+    
+    const landmarks = results.multiFaceLandmarks[0];
+    
+    // Compute head pose and facial expressions
+    const roll = computeHeadRoll(landmarks);
+    const mouthOpenness = computeMouthOpenness(landmarks);
+    
+    console.debug('[preview] roll=', roll.toFixed(3), 'mouth=', mouthOpenness.toFixed(3));
+    
+    // Animate avatar
+    animateAvatar(roll, mouthOpenness);
+}
+
+/**
+ * Compute head roll angle from eye corners
+ * @param {Array} landmarks - Face landmarks
+ * @returns {number} Roll angle in radians
+ */
+function computeHeadRoll(landmarks) {
+    // Use eye corners for roll calculation
+    const leftEye = landmarks[33];  // Left eye outer corner
+    const rightEye = landmarks[263]; // Right eye outer corner
+    
+    const deltaY = rightEye.y - leftEye.y;
+    const deltaX = rightEye.x - leftEye.x;
+    
+    return Math.atan2(deltaY, deltaX);
+}
+
+/**
+ * Compute mouth openness ratio
+ * @param {Array} landmarks - Face landmarks  
+ * @returns {number} Mouth openness ratio
+ */
+function computeMouthOpenness(landmarks) {
+    // Upper and lower lip landmarks
+    const upperLip = landmarks[13];
+    const lowerLip = landmarks[14];
+    
+    const mouthHeight = Math.abs(lowerLip.y - upperLip.y);
+    
+    // Compare with avatar's baseline mouth if available
+    if (avatarLandmarks) {
+        const avatarUpperLip = avatarLandmarks[13];
+        const avatarLowerLip = avatarLandmarks[14];
+        const avatarMouthHeight = Math.abs(avatarLowerLip.y - avatarUpperLip.y);
+        return avatarMouthHeight > 0 ? mouthHeight / avatarMouthHeight : mouthHeight;
+    }
+    
+    // Fallback to absolute threshold
+    return mouthHeight > 0.01 ? mouthHeight * 50 : 0;
+}
+
+/**
+ * Animate avatar based on face tracking data
+ * @param {number} roll - Head roll angle in radians
+ * @param {number} mouthOpenness - Mouth openness ratio
+ */
+function animateAvatar(roll, mouthOpenness) {
+    if (!avatarImg) return;
+    
+    const centerX = avatarCanvas.width / 2;
+    const centerY = avatarCanvas.height / 2;
+    const avatarWidth = avatarCanvas.width;
+    const avatarHeight = avatarCanvas.height;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
+    
+    // Save context for transformations
+    ctx.save();
+    
+    // Move to center for rotation
+    ctx.translate(centerX, centerY);
+    
+    // Apply head roll rotation
+    ctx.rotate(roll);
+    
+    // Draw base avatar
+    ctx.drawImage(avatarImg, -avatarWidth/2, -avatarHeight/2, avatarWidth, avatarHeight);
+    
+    // Simple mouth animation - draw a second layer if mouth is open
+    const mouthThreshold = 1.2;
+    if (mouthOpenness > mouthThreshold) {
+        console.debug('[preview] mouth open, adding talking effect');
+        
+        // Create a simple "talking mouth" effect by drawing the avatar slightly stretched
+        ctx.save();
+        ctx.scale(1, 1.05); // Slightly stretch vertically
+        ctx.globalAlpha = 0.7;
+        
+        // Create mouth area mask (simple ellipse approximation)
+        ctx.beginPath();
+        ctx.ellipse(0, avatarHeight * 0.1, avatarWidth * 0.2, avatarHeight * 0.1, 0, 0, 2 * Math.PI);
+        ctx.clip();
+        
+        // Draw stretched avatar for mouth area
+        ctx.drawImage(avatarImg, -avatarWidth/2, -avatarHeight/2 + 3, avatarWidth, avatarHeight);
+        
+        ctx.restore();
+    }
+    
+    // Restore context
+    ctx.restore();
+}
+
+/**
+ * Start recording the canvas
+ */
 function startRecording() {
-  if (isRecording || !canvas) return;
-  
-  try {
-    const canvasStream = canvas.captureStream(30); // 30 FPS capture
-    mediaRecorder = new MediaRecorder(canvasStream, {
-      mimeType: MediaRecorder.isTypeSupported('video/webm; codecs=vp9') 
-        ? 'video/webm; codecs=vp9' 
-        : 'video/webm'
+    if (isRecording) return;
+    
+    console.log('[preview] Starting recording...');
+    isRecording = true;
+    startBtn.disabled = true;
+    startBtn.textContent = '🎬 Recording... (5s)';
+    
+    const stream = avatarCanvas.captureStream(30);
+    const recorder = new MediaRecorder(stream, { 
+        mimeType: 'video/webm;codecs=vp9' 
     });
     
-    recordedChunks = [];
+    const chunks = [];
     
-    mediaRecorder.ondataavailable = event => {
-      if (event.data.size > 0) {
-        recordedChunks.push(event.data);
-      }
+    recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+            chunks.push(event.data);
+        }
     };
     
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(recordedChunks, {
-        type: 'video/webm'
-      });
-      
-      // Create a download link for the recorded video
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.style.display = 'none';
-      a.href = url;
-      a.download = 'spromoji_recording.webm';
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      
-      updateStatus('Recording saved! Check your downloads.');
-      console.log('Recording saved');
+    recorder.onstop = () => {
+        console.log('[preview] Recording stopped');
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        
+        // TODO: Send blob back to bot or offer download
+        console.log('[preview] Recorded blob size:', blob.size, 'bytes');
+        
+        // For now, create download link
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'spromoji-avatar.webm';
+        a.textContent = 'Download Recording';
+        a.style.display = 'block';
+        a.style.marginTop = '10px';
+        a.style.color = 'white';
+        startBtn.parentNode.appendChild(a);
+        
+        // Reset button
+        isRecording = false;
+        startBtn.disabled = false;
+        startBtn.textContent = '🎬 Start Recording';
+        updateStatus('Recording complete! Click the download link above.');
     };
     
-    mediaRecorder.start();
-    isRecording = true;
-    startBtn.textContent = 'Recording... (5s)';
-    startBtn.disabled = true;
-    updateStatus('Recording in progress...');
+    recorder.start();
     
     // Record for 5 seconds
     setTimeout(() => {
-      stopRecording();
-    }, 5000);
-    
-  } catch (error) {
-    updateStatus('Error starting recording. Please try again.');
-    console.error('Error starting recording:', error);
-  }
-}
-
-function stopRecording() {
-  if (!isRecording || !mediaRecorder) return;
-  
-  mediaRecorder.stop();
-  isRecording = false;
-  startBtn.textContent = '🎬 Start Recording';
-  startBtn.disabled = false;
-  updateStatus('Processing recording...');
-}
-
-async function main() {
-  console.log('🚀 Starting SPROMOJI initialization...');
-  
-  // Immediate status update
-  updateStatus('Setting up SPROMOJI...');
-  
-  // Check if imports succeeded
-  console.log('MediaPipe imports available:', { 
-    FaceMesh: FaceMesh ? 'loaded' : 'failed', 
-    Camera: Camera ? 'loaded' : 'failed',
-    THREE: THREE ? 'loaded' : 'failed'
-  });
-  console.log('Canvas elements:', { canvas, cam, avatarInput });
-  
-  // Hide loading and start basic mode if imports failed
-  if (!FaceMesh || !Camera || !THREE) {
-    console.log('🔄 Starting basic mode due to import failures');
-    hideLoading();
-    updateStatus('Running in basic mode. Upload an avatar to see it displayed.');
-    startBasicMode();
-    return;
-  }
-  
-  let facemesh = null;
-  let camera = null;
-  
-  try {
-    console.log('📷 Initializing Face Mesh...');
-    updateStatus('Initializing face tracking system...');
-    
-    // Set up face mesh processing with error handling
-    facemesh = new FaceMesh({
-      locateFile: (f) => {
-        const url = `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`;
-        console.log('Loading MediaPipe file:', url);
-        return url;
-      },
-    });
-    
-    console.log('⚙️ Setting Face Mesh options...');
-    facemesh.setOptions({
-      selfieMode: true,
-      maxNumFaces: 1,
-      refineLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-
-    facemesh.onResults((res) => {
-      if (!avatarImg || !res.multiFaceLandmarks.length) return;
-      const l = res.multiFaceLandmarks[0];
-      const pose = estimatePose(l);
-      const blink = detectBlink(l);
-      const mouthOpen = detectMouthOpen(l);
-      animateMesh(pose, blink, mouthOpen);
-    });
-    
-    console.log('✅ Face Mesh initialized successfully');
-
-    // Set up camera with error handling
-    console.log('📹 Setting up camera...');
-    camera = new Camera(cam, {
-      onFrame: async () => {
-        try {
-          await facemesh.send({ image: cam });
-        } catch (error) {
-          console.error('Error processing frame:', error);
+        if (recorder.state === 'recording') {
+            recorder.stop();
         }
-      },
-      width: 640,
-      height: 480
-    });
-    
-    console.log('✅ Camera initialized successfully');
-    
-  } catch (error) {
-    console.error('❌ Error initializing MediaPipe:', error);
-    updateStatus('Face tracking initialization failed. Using fallback mode.');
-    hideLoading();
-    return; // Exit early if MediaPipe fails
-  }
-
-  // Function to start preview (camera + face mesh)
-  async function startPreview() {
-    console.log('🎬 Starting preview...');
-    try {
-      updateStatus('Starting camera and face tracking...');
-      
-      if (!camera) {
-        throw new Error('Camera not initialized');
-      }
-      
-      console.log('📹 Starting camera stream...');
-      await camera.start();
-      
-      console.log('✅ Camera started successfully');
-      hideLoading();
-      updateStatus('Camera active! Move your face to see the avatar respond.');
-      console.log('Camera and face mesh started');
-      
-    } catch (error) {
-      console.error('❌ Error starting camera:', error);
-      hideLoading();
-      
-      if (error.name === 'NotAllowedError') {
-        updateStatus('Camera permission denied. Please allow camera access and refresh the page.');
-      } else if (error.name === 'NotFoundError') {
-        updateStatus('No camera found. Please connect a camera and refresh.');
-      } else {
-        updateStatus('Camera failed to start. Please refresh and try again.');
-      }
-    }
-  }
-
-  // Load avatar from URL parameters (Telegram profile photo)
-  const urlParams = new URLSearchParams(window.location.search);
-  const startParams = new URLSearchParams(tg?.initDataUnsafe?.start_param || '');
-  const avatarParam = startParams.get('avatar') || urlParams.get('avatar');
-  const userPhoto = avatarParam || tg?.initDataUnsafe?.user?.photo_url;
-  
-  if (userPhoto) {
-    console.log('Loading avatar from URL:', userPhoto);
-    try {
-      await setupAvatarFromPhoto(userPhoto);
-      await startPreview(); // Start preview as soon as avatar is loaded
-    } catch (error) {
-      console.error('Failed to load Telegram avatar, starting preview anyway:', error);
-      updateStatus('Failed to load profile photo. Please upload an image or try again.');
-      await startPreview(); // Start preview even if avatar fails
-    }
-  }
-
-  // Handle file input for avatar upload
-  avatarInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    
-    console.log('Loading avatar from file:', file.name);
-    const url = URL.createObjectURL(file);
-    await setupAvatarFromPhoto(url);
-    URL.revokeObjectURL(url);
-    
-    // Start preview if not already started
-    if (!userPhoto) {
-      await startPreview();
-    }
-  });
-
-  // Handle recording button
-  startBtn.addEventListener('click', () => {
-    if (!avatarImg) {
-      updateStatus('Please select an avatar image first!');
-      return;
-    }
-    startRecording();
-  });
-
-  // If no avatar is loaded initially, start camera anyway for preview
-  if (!userPhoto) {
-    updateStatus('Please upload an avatar image to get started!');
-    await startPreview();
-  }
-  
-  // Ensure loading indicator disappears after a timeout
-  setTimeout(() => {
-    console.log('⏰ Timeout check - Loading indicator visible:', 
-                loadingIndicator && loadingIndicator.style.display !== 'none');
-    if (loadingIndicator && loadingIndicator.style.display !== 'none') {
-      console.log('⚠️ Timeout: Force hiding loading indicator');
-      hideLoading();
-      if (!avatarImg) {
-        updateStatus('Ready! Upload an avatar image to get started.');
-      } else {
-        updateStatus('Face tracking may have issues. Try refreshing if avatar doesn\'t move.');
-      }
-    }
-  }, 3000); // Reduced to 3 second timeout
-  
-  console.log('🎉 SPROMOJI initialization complete!');
+    }, 5000);
 }
 
-// Basic mode when MediaPipe is not available
-function startBasicMode() {
-  console.log('🔄 Starting basic mode without face tracking...');
-  
-  // Debug current URL and parameters
-  console.log('📍 Current URL:', window.location.href);
-  console.log('📍 Search params:', window.location.search);
-  
-  // Load avatar from URL parameters (Telegram profile photo)
-  const urlParams = new URLSearchParams(window.location.search);
-  const avatarParam = urlParams.get('avatar');
-  
-  console.log('🔍 Raw avatar param:', avatarParam);
-  
-  if (avatarParam) {
-    // Decode the URL parameter properly
-    const decodedAvatarUrl = decodeURIComponent(avatarParam);
-    console.log('📷 Decoded avatar URL:', decodedAvatarUrl);
-    console.log('📷 Loading Telegram avatar in basic mode...');
-    loadBasicAvatar(decodedAvatarUrl);
-  } else {
-    console.log('❌ No avatar parameter found in URL');
-    updateStatus('No profile photo found. Please upload an avatar image.');
-  }
-  
-  // Set up file input for avatar upload
-  if (avatarInput && !avatarInput.hasBasicListener) {
-    avatarInput.hasBasicListener = true;
-    avatarInput.addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      
-      console.log('📁 Loading avatar from file:', file.name);
-      const url = URL.createObjectURL(file);
-      loadBasicAvatar(url);
-    });
-  }
-  
-  // Set up basic avatar display and recording
-  if (startBtn && !startBtn.hasBasicListener) {
-    startBtn.hasBasicListener = true;
-    startBtn.addEventListener('click', () => {
-      if (!avatarImg) {
-        updateStatus('Please select an avatar image first!');
-        return;
-      }
-      
-      // Simple canvas recording without face mesh
-      updateStatus('Recording static avatar...');
-      
-      try {
-        const canvasStream = canvas.captureStream(30);
-        const recorder = new MediaRecorder(canvasStream);
-        const chunks = [];
-        
-        recorder.ondataavailable = e => chunks.push(e.data);
-        recorder.onstop = () => {
-          const blob = new Blob(chunks, { type: 'video/webm' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = 'spromoji_static.webm';
-          a.click();
-          updateStatus('Static recording saved!');
-        };
-        
-        recorder.start();
-        setTimeout(() => recorder.stop(), 3000);
-      } catch (error) {
-        console.error('Recording error:', error);
-        updateStatus('Recording failed. Browser may not support this feature.');
-      }
-    });
-  }
+/**
+ * Update status message
+ * @param {string} message - Status message
+ */
+function updateStatus(message) {
+    if (statusText) {
+        statusText.textContent = message;
+    }
+    console.log('[preview] Status:', message);
 }
 
-// Load avatar in basic mode (without Three.js)
-async function loadBasicAvatar(src) {
-  try {
-    updateStatus('Loading avatar image...');
-    console.log('🖼️ Loading basic avatar from:', src);
-    console.log('🔍 Image URL validation - starts with https:', src.startsWith('https://'));
-    console.log('🔍 Image URL validation - contains api.telegram.org:', src.includes('api.telegram.org'));
-    
-    const img = new Image();
-    
-    // Try without crossOrigin first for Telegram images (might cause CORS issues)
-    if (src.includes('api.telegram.org')) {
-      console.log('🔧 Loading Telegram image without crossOrigin...');
-      // Don't set crossOrigin for Telegram images to avoid CORS issues
-    } else {
-      console.log('🔧 Loading external image with crossOrigin...');
-      img.crossOrigin = 'anonymous';
+/**
+ * Hide loading indicator
+ */
+function hideLoading() {
+    if (loadingIndicator) {
+        loadingIndicator.style.display = 'none';
     }
-    
-    await new Promise((resolve, reject) => {
-      let timeoutHandle;
-      
-      img.onload = () => {
-        clearTimeout(timeoutHandle);
-        console.log('✅ Avatar loaded successfully');
-        console.log('📏 Image dimensions:', img.width, 'x', img.height);
-        resolve();
-      };
-      
-      img.onerror = (error) => {
-        clearTimeout(timeoutHandle);
-        console.error('❌ Avatar load failed:', error);
-        console.error('❌ Failed URL was:', src);
-        reject(new Error(`Failed to load image: ${error.message || 'Unknown error'}`));
-      };
-      
-      // Set a timeout for image loading
-      timeoutHandle = setTimeout(() => {
-        console.error('⏰ Avatar loading timeout after 10 seconds');
-        reject(new Error('Image loading timeout'));
-      }, 10000);
-      
-      console.log('🔄 Setting image src...');
-      img.src = src;
-    });
-    
-    // Ensure canvas exists and is ready
-    if (!canvas) {
-      throw new Error('Canvas element not found');
-    }
-    
-    // Set canvas size and draw image
-    const maxSize = 500;
-    const aspectRatio = img.height / img.width;
-    
-    if (img.width > img.height) {
-      canvas.width = Math.min(img.width, maxSize);
-      canvas.height = canvas.width * aspectRatio;
-    } else {
-      canvas.height = Math.min(img.height, maxSize);
-      canvas.width = canvas.height / aspectRatio;
-    }
-    
-    console.log('📐 Canvas size set to:', canvas.width, 'x', canvas.height);
-    
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('Could not get canvas 2D context');
-    }
-    
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    
-    // Store the avatar
-    avatarImg = img;
-    
-    updateStatus('Avatar loaded! Click "Start Recording" to record a video.');
-    console.log('🎨 Avatar drawn on canvas successfully');
-    
-  } catch (error) {
-    console.error('❌ Failed to load avatar:', error);
-    console.error('❌ Error details:', error.message);
-    
-    // Try a more specific error message
-    if (error.message.includes('CORS')) {
-      updateStatus('CORS error loading image. Please upload an image file instead.');
-    } else if (error.message.includes('timeout')) {
-      updateStatus('Image loading timeout. Please check your connection or upload a file.');
-    } else {
-      updateStatus('Failed to load avatar. Please try uploading an image file.');
-    }
-    
-    // Show the file upload as alternative
-    if (avatarInput && avatarInput.style) {
-      avatarInput.style.display = 'block';
-    }
-  }
 }
 
-// Fallback initialization if MediaPipe fails during runtime
-async function fallbackMode() {
-  console.log('🔄 Entering runtime fallback mode...');
-  hideLoading();
-  updateStatus('Face tracking failed. Running in basic mode.');
-  startBasicMode();
-}
-
-// Initialize everything
+/**
+ * Initialize the application
+ */
 async function initializeApp() {
-  console.log('🚀 App initialization starting...');
-  
-  // Try to load MediaPipe
-  const mediaLoaded = await loadMediaPipe();
-  
-  if (mediaLoaded) {
-    console.log('📱 Starting with face tracking...');
-    try {
-      await main();
-    } catch (error) {
-      console.error('❌ Main initialization failed:', error);
-      fallbackMode();
+    console.log('[preview] Initializing app...');
+    
+    // Check for avatar URL parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    const avatarUrl = urlParams.get('avatar');
+    
+    if (avatarUrl) {
+        console.log('[preview] Found avatar URL parameter');
+        try {
+            await loadAvatar(decodeURIComponent(avatarUrl));
+            updateStatus('Avatar loaded! Initializing face tracking...');
+        } catch (error) {
+            console.error('[preview] Failed to load avatar from URL:', error);
+            updateStatus('Failed to load avatar. Please upload an image.');
+            hideLoading();
+        }
+    } else {
+        console.log('[preview] No avatar URL found');
+        updateStatus('Please upload an avatar image to begin.');
+        hideLoading();
     }
-  } else {
-    console.log('🔄 Starting in basic mode...');
-    hideLoading();
-    updateStatus('Running in basic mode. Upload an avatar image to continue.');
-    startBasicMode();
-  }
+    
+    // Initialize preview regardless (for live face tracking)
+    await initPreview();
 }
 
-// Start the app
-initializeApp().catch(error => {
-  console.error('❌ Critical initialization error:', error);
-  hideLoading();
-  updateStatus('Error loading app. Refresh page to try again.');
-  startBasicMode();
+// Event listeners
+startBtn.addEventListener('click', startRecording);
+
+avatarInput.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (file) {
+        console.log('[preview] Loading uploaded avatar:', file.name);
+        const url = URL.createObjectURL(file);
+        try {
+            await loadAvatar(url);
+            updateStatus('Avatar uploaded! Face tracking active.');
+        } catch (error) {
+            console.error('[preview] Failed to load uploaded avatar:', error);
+            updateStatus('Failed to load uploaded image.');
+        }
+    }
 });
+
+// Graceful error handling
+window.addEventListener('error', (event) => {
+    console.error('[preview] Global error:', event.error);
+    updateStatus('An error occurred. Please refresh the page.');
+});
+
+// Initialize when page loads
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeApp);
+} else {
+    initializeApp();
+}
+
+console.log('[preview] SPROMOJI script loaded successfully'); 
