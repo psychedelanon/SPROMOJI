@@ -1,19 +1,22 @@
 """Telegram bot and Flask app for the Spromoji WebApp."""
 import os
-import threading
+import asyncio
+from dotenv import load_dotenv
 
 from flask import Flask, request, render_template
-from telegram import (KeyboardButton, ReplyKeyboardMarkup, Update,
-                      WebAppInfo)
-from telegram.ext import CommandHandler, Dispatcher, Updater
+from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Get configuration from environment
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "http://localhost:5000/")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
-# Initialize the Telegram updater/dispatcher
-updater = Updater(token=TOKEN, use_context=True)
-dispatcher: Dispatcher = updater.dispatcher
+# Initialize the Telegram application
+application = Application.builder().token(TOKEN).build()
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
@@ -25,44 +28,47 @@ def index():
 
 
 @app.route("/webhook", methods=["POST"])
-def webhook() -> str:
+def webhook():
     """Process incoming Telegram updates sent via webhook."""
-    update = Update.de_json(request.get_json(force=True), updater.bot)
-    dispatcher.process_update(update)
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    asyncio.create_task(application.process_update(update))
     return "OK"
 
 
-def start(update: Update, context) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a button that opens the WebApp."""
     keyboard = [
         [KeyboardButton("Open Spromoji", web_app=WebAppInfo(url=WEB_APP_URL))]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    update.message.reply_text(
+    await update.message.reply_text(
         "Welcome! Tap the button below to launch Spromoji.",
         reply_markup=reply_markup,
     )
 
 
-dispatcher.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("start", start))
 
 
-def run_polling():
-    """Start the bot in polling mode (used when WEBHOOK_URL is not set)."""
-    updater.start_polling()
-    updater.idle()
+async def setup_webhook():
+    """Set up the webhook for production."""
+    if WEBHOOK_URL:
+        await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+        print(f"Webhook set to: {WEBHOOK_URL}/webhook")
+    else:
+        print("No WEBHOOK_URL set, skipping webhook setup")
 
 
 if __name__ == "__main__":
-    webhook_url = os.environ.get("WEBHOOK_URL")
-
-    if webhook_url:
-        # Configure Telegram to send updates to our webhook
-        updater.bot.set_webhook(f"{webhook_url}/webhook")
+    # Initialize the application
+    asyncio.get_event_loop().run_until_complete(application.initialize())
+    
+    # Set up webhook if URL is provided
+    if WEBHOOK_URL:
+        asyncio.get_event_loop().run_until_complete(setup_webhook())
     else:
-        # Start polling in a separate thread for local development
-        thread = threading.Thread(target=run_polling)
-        thread.start()
+        print("Running without webhook (for local development)")
 
-    # Start the Flask web server to serve the WebApp
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # Start the Flask web server
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
