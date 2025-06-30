@@ -8,9 +8,28 @@ if (tg && tg.expand) tg.expand();
 const canvas = document.getElementById('avatarCanvas');
 const cam = document.getElementById('cam');
 const avatarInput = document.getElementById('avatarInput');
+const startBtn = document.getElementById('startBtn');
+const loadingIndicator = document.getElementById('loading');
+const statusText = document.getElementById('status');
 
 let avatarImg = null;
 let renderer, scene, camera3D, mesh;
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+
+function updateStatus(message) {
+  if (statusText) {
+    statusText.textContent = message;
+  }
+  console.log('Status:', message);
+}
+
+function hideLoading() {
+  if (loadingIndicator) {
+    loadingIndicator.style.display = 'none';
+  }
+}
 
 function resizeCanvas() {
   canvas.width = canvas.clientWidth;
@@ -102,27 +121,86 @@ function detectMouthOpen(l) {
 }
 
 async function setupAvatarFromPhoto(src) {
-  avatarImg = await loadAvatar(src);
-  if (!renderer) await initScene();
+  try {
+    updateStatus('Loading avatar image...');
+    avatarImg = await loadAvatar(src);
+    if (!renderer) await initScene();
+    updateStatus('Avatar loaded! Move your face to see the animation.');
+    console.log('Avatar loaded and scene initialized');
+  } catch (error) {
+    console.error('Error loading avatar:', error);
+    updateStatus('Error loading avatar image. Please try another image.');
+  }
+}
+
+function startRecording() {
+  if (isRecording || !canvas) return;
+  
+  try {
+    const canvasStream = canvas.captureStream(30); // 30 FPS capture
+    mediaRecorder = new MediaRecorder(canvasStream, {
+      mimeType: MediaRecorder.isTypeSupported('video/webm; codecs=vp9') 
+        ? 'video/webm; codecs=vp9' 
+        : 'video/webm'
+    });
+    
+    recordedChunks = [];
+    
+    mediaRecorder.ondataavailable = event => {
+      if (event.data.size > 0) {
+        recordedChunks.push(event.data);
+      }
+    };
+    
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, {
+        type: 'video/webm'
+      });
+      
+      // Create a download link for the recorded video
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = 'spromoji_recording.webm';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      updateStatus('Recording saved! Check your downloads.');
+      console.log('Recording saved');
+    };
+    
+    mediaRecorder.start();
+    isRecording = true;
+    startBtn.textContent = 'Recording... (5s)';
+    startBtn.disabled = true;
+    updateStatus('Recording in progress...');
+    
+    // Record for 5 seconds
+    setTimeout(() => {
+      stopRecording();
+    }, 5000);
+    
+  } catch (error) {
+    updateStatus('Error starting recording. Please try again.');
+    console.error('Error starting recording:', error);
+  }
+}
+
+function stopRecording() {
+  if (!isRecording || !mediaRecorder) return;
+  
+  mediaRecorder.stop();
+  isRecording = false;
+  startBtn.textContent = '🎬 Start Recording';
+  startBtn.disabled = false;
+  updateStatus('Processing recording...');
 }
 
 async function main() {
-  const urlParams = new URLSearchParams(window.location.search);
-  const startParams = new URLSearchParams(tg?.initDataUnsafe?.start_param || '');
-  const avatarParam = startParams.get('avatar') || urlParams.get('avatar');
-  const userPhoto = avatarParam || tg?.initDataUnsafe?.user?.photo_url;
-  if (userPhoto) {
-    await setupAvatarFromPhoto(userPhoto);
-  }
-
-  avatarInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    await setupAvatarFromPhoto(url);
-    URL.revokeObjectURL(url);
-  });
-
+  // Set up face mesh processing
   const facemesh = new FaceMesh({
     locateFile: (f) =>
       `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`,
@@ -142,12 +220,70 @@ async function main() {
     animateMesh(pose, blink, mouthOpen);
   });
 
+  // Set up camera
   const camera = new Camera(cam, {
     onFrame: async () => {
       await facemesh.send({ image: cam });
     },
   });
-  camera.start();
+
+  // Function to start preview (camera + face mesh)
+  async function startPreview() {
+    try {
+      updateStatus('Starting camera and face tracking...');
+      await camera.start();
+      hideLoading();
+      updateStatus('Camera active! Move your face to see the avatar respond.');
+      console.log('Camera and face mesh started');
+    } catch (error) {
+      hideLoading();
+      updateStatus('Camera access denied. Please allow camera permissions and refresh.');
+      console.error('Error starting camera:', error);
+    }
+  }
+
+  // Load avatar from URL parameters (Telegram profile photo)
+  const urlParams = new URLSearchParams(window.location.search);
+  const startParams = new URLSearchParams(tg?.initDataUnsafe?.start_param || '');
+  const avatarParam = startParams.get('avatar') || urlParams.get('avatar');
+  const userPhoto = avatarParam || tg?.initDataUnsafe?.user?.photo_url;
+  
+  if (userPhoto) {
+    console.log('Loading avatar from URL:', userPhoto);
+    await setupAvatarFromPhoto(userPhoto);
+    await startPreview(); // Start preview as soon as avatar is loaded
+  }
+
+  // Handle file input for avatar upload
+  avatarInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    console.log('Loading avatar from file:', file.name);
+    const url = URL.createObjectURL(file);
+    await setupAvatarFromPhoto(url);
+    URL.revokeObjectURL(url);
+    
+    // Start preview if not already started
+    if (!userPhoto) {
+      await startPreview();
+    }
+  });
+
+  // Handle recording button
+  startBtn.addEventListener('click', () => {
+    if (!avatarImg) {
+      updateStatus('Please select an avatar image first!');
+      return;
+    }
+    startRecording();
+  });
+
+  // If no avatar is loaded initially, start camera anyway for preview
+  if (!userPhoto) {
+    updateStatus('Please upload an avatar image to get started!');
+    await startPreview();
+  }
 }
 
 main();

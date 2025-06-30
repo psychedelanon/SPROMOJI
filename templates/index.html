@@ -7,14 +7,33 @@
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-    <h1>Spromoji</h1>
-    <input type="file" id="avatarInput" accept="image/*" />
-    <div id="stage">
-        <canvas id="avatarCanvas"></canvas>
-        <video id="cam" autoplay playsinline muted hidden></video>
+    <div class="container">
+        <h1>🚀 Spromoji</h1>
+        <p class="subtitle">Mirror your expressions with your avatar!</p>
+        
+        <div class="upload-section">
+            <label for="avatarInput" class="file-upload-label">
+                📸 Choose Avatar Image
+            </label>
+            <input type="file" id="avatarInput" accept="image/*" />
+            <p class="help-text">Upload an image or use your Telegram profile photo</p>
+        </div>
+        
+        <div id="stage">
+            <canvas id="avatarCanvas"></canvas>
+            <video id="cam" autoplay playsinline muted hidden></video>
+            <div id="loading" class="loading-indicator">
+                Loading face tracking...
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="startBtn" class="record-btn">🎬 Start Recording</button>
+            <p class="help-text">Position your face in view and click to record a 5-second video</p>
+        </div>
+        
+        <div id="status" class="status-text"></div>
     </div>
-    <br />
-    <button id="startBtn">Start Recording</button>
 
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script type="module" src="/static/script.js"></script>
