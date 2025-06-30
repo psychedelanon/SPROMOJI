@@ -55,7 +55,12 @@ def serve_avatar(uid: str):
         print(f"Avatar not found in cache: {uid}")
         return "Not Found", 404
     
-    tg_url = f"https://api.telegram.org/file/bot{TOKEN}/{tg_path}"
+    # Check if tg_path is already a full URL or just a path
+    if tg_path.startswith('https://'):
+        tg_url = tg_path
+    else:
+        tg_url = f"https://api.telegram.org/file/bot{TOKEN}/{tg_path}"
+    
     print(f"Proxying avatar: {tg_url}")
     
     try:
