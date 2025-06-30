@@ -459,6 +459,28 @@ async function main() {
 function startBasicMode() {
   console.log('🔄 Starting basic mode without face tracking...');
   
+  // Load avatar from URL parameters (Telegram profile photo)
+  const urlParams = new URLSearchParams(window.location.search);
+  const avatarParam = urlParams.get('avatar');
+  
+  if (avatarParam) {
+    console.log('📷 Loading Telegram avatar in basic mode:', avatarParam);
+    loadBasicAvatar(avatarParam);
+  }
+  
+  // Set up file input for avatar upload
+  if (avatarInput && !avatarInput.hasBasicListener) {
+    avatarInput.hasBasicListener = true;
+    avatarInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      console.log('📁 Loading avatar from file:', file.name);
+      const url = URL.createObjectURL(file);
+      loadBasicAvatar(url);
+    });
+  }
+  
   // Set up basic avatar display and recording
   if (startBtn && !startBtn.hasBasicListener) {
     startBtn.hasBasicListener = true;
@@ -494,6 +516,47 @@ function startBasicMode() {
         updateStatus('Recording failed. Browser may not support this feature.');
       }
     });
+  }
+}
+
+// Load avatar in basic mode (without Three.js)
+async function loadBasicAvatar(src) {
+  try {
+    updateStatus('Loading avatar image...');
+    console.log('🖼️ Loading basic avatar from:', src);
+    
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    
+    await new Promise((resolve, reject) => {
+      img.onload = () => {
+        console.log('✅ Avatar loaded successfully');
+        resolve();
+      };
+      img.onerror = (error) => {
+        console.error('❌ Avatar load failed:', error);
+        reject(error);
+      };
+      img.src = src;
+    });
+    
+    // Set canvas size and draw image
+    canvas.width = Math.min(img.width, 500);
+    canvas.height = Math.min(img.height, 500);
+    
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    
+    // Store the avatar
+    avatarImg = img;
+    
+    updateStatus('Avatar loaded! Click "Start Recording" to record a video.');
+    console.log('🎨 Avatar drawn on canvas');
+    
+  } catch (error) {
+    console.error('❌ Failed to load avatar:', error);
+    updateStatus('Failed to load avatar. Please try uploading an image file.');
   }
 }
 
