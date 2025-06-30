@@ -1,7 +1,8 @@
-// SPROMOJI - Live Avatar Animation
-// Fixed implementation with CORS proxy, robust loading, and proper preview
+// SPROMOJI - Landmark-to-Landmark Facial Morphing (Memoji-lite)
+// Phase P0: Avatar landmark detection and caching
+// Phase P1: Real-time mouth/eye morphing with Delaunay triangulation
 
-console.log('[preview] SPROMOJI starting...');
+console.log('[morph] SPROMOJI Facial Morphing starting...');
 
 // DOM elements
 const cam = document.getElementById('cam');
@@ -14,10 +15,21 @@ const statusText = document.getElementById('status');
 
 // Global state
 let avatarImg = null;
+let avatarLandmarks = null;    // P0: Cached avatar facial landmarks
+let avatarTriangulation = null; // P0: Cached triangulation data
 let faceMesh = null;
 let camera = null;
 let isRecording = false;
 let previewRunning = false;
+let morphingEnabled = false;   // P1: Fallback flag
+
+// Performance monitoring
+let lastFrameTime = 0;
+let frameCount = 0;
+
+// Create off-screen canvas for avatar processing
+let avatarSrcCanvas = null;
+let avatarSrcCtx = null;
 
 // Telegram WebApp initialization
 const tg = window.Telegram?.WebApp;
@@ -28,33 +40,41 @@ if (tg && tg.expand) tg.expand();
  * @param {string} src - Image URL
  */
 async function loadAvatar(src) {
-    console.log('[avatar] Loading avatar:', src);
+    console.log('[morph] Loading avatar:', src);
     updateStatus('Loading avatar image...');
     
     try {
         await drawImage(src);
-        console.debug('[avatar] loaded ok');
+        console.debug('[morph] Avatar loaded successfully');
+        
+        // P0: Analyze avatar for facial landmarks
+        await analyzeAvatarFace();
+        
     } catch (e) {
-        console.warn('[avatar] cors fallback triggered');
+        console.warn('[morph] Primary load failed, trying CORS fallback');
         try {
             // Fallback: fetch as blob then ObjectURL to bypass CORS
             const blob = await fetch(src).then(r => r.blob());
             const localUrl = URL.createObjectURL(blob);
             await drawImage(localUrl);
-            console.debug('[avatar] fallback successful');
+            console.debug('[morph] Fallback load successful');
+            
+            // P0: Analyze avatar for facial landmarks
+            await analyzeAvatarFace();
+            
         } catch (fallbackError) {
-            console.error('[avatar] both methods failed:', fallbackError);
+            console.error('[morph] Both loading methods failed:', fallbackError);
             updateStatus('Failed to load avatar image');
             throw fallbackError;
         }
     }
     
-    // Start face-mesh preview once avatar is visible
+    // Start face-mesh preview once avatar is ready
     initPreview();
 }
 
 /**
- * Draw image to canvas without CORS restrictions
+ * Draw image to canvas and prepare for morphing
  * @param {string} url - Image URL
  */
 function drawImage(url) {
@@ -64,39 +84,111 @@ function drawImage(url) {
         img.onload = () => {
             avatarImg = img;
             
-            // Resize canvas to match image while maintaining aspect ratio
-            const maxSize = 400;
+            // Downscale to max 256px for performance (P1 optimization)
+            const maxSize = 256;
             const scale = Math.min(maxSize / img.width, maxSize / img.height);
-            avatarCanvas.width = img.width * scale;
-            avatarCanvas.height = img.height * scale;
+            const scaledWidth = Math.floor(img.width * scale);
+            const scaledHeight = Math.floor(img.height * scale);
             
-            // Draw initial image
-            ctx.drawImage(img, 0, 0, avatarCanvas.width, avatarCanvas.height);
+            // Set canvas size
+            avatarCanvas.width = scaledWidth;
+            avatarCanvas.height = scaledHeight;
             
-            updateStatus('Avatar loaded! Initializing face tracking...');
+            // Create off-screen source canvas for morphing
+            avatarSrcCanvas = document.createElement('canvas');
+            avatarSrcCanvas.width = scaledWidth;
+            avatarSrcCanvas.height = scaledHeight;
+            avatarSrcCtx = avatarSrcCanvas.getContext('2d');
+            
+            // Draw initial image to both canvases
+            ctx.drawImage(img, 0, 0, scaledWidth, scaledHeight);
+            avatarSrcCtx.drawImage(img, 0, 0, scaledWidth, scaledHeight);
+            
+            updateStatus('Avatar loaded! Analyzing facial structure...');
             resolve();
         };
         
         img.onerror = (error) => {
-            console.error('[avatar] Image load error:', error);
+            console.error('[morph] Image load error:', error);
             reject(new Error('Failed to load image'));
         };
         
-        // Important: do NOT set crossOrigin here; proxy already fixes CORS
+        // No crossOrigin - proxy handles CORS
         img.src = url;
     });
 }
 
 /**
- * Initialize webcam and face tracking - only once
+ * P0: Analyze static avatar image to detect facial landmarks
  */
-async function initPreview() {
-    if (previewRunning) {
-        console.log('[preview] Already running, skipping init');
+async function analyzeAvatarFace() {
+    if (!faceMesh) {
+        console.log('[morph] FaceMesh not ready, will analyze later');
         return;
     }
     
-    console.log('[preview] Initializing webcam and face tracking...');
+    console.log('[morph] Analyzing avatar facial structure...');
+    updateStatus('Detecting facial landmarks...');
+    
+    try {
+        // Send avatar to MediaPipe for landmark detection
+        const results = await new Promise((resolve) => {
+            const originalHandler = faceMesh.onResults;
+            
+            // Temporary handler for avatar analysis
+            faceMesh.onResults = (results) => {
+                faceMesh.onResults = originalHandler; // Restore original handler
+                resolve(results);
+            };
+            
+            faceMesh.send({ image: avatarSrcCanvas });
+        });
+        
+        if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+            avatarLandmarks = results.multiFaceLandmarks[0];
+            
+            // Scale landmarks to canvas coordinates
+            for (let landmark of avatarLandmarks) {
+                landmark.x *= avatarCanvas.width;
+                landmark.y *= avatarCanvas.height;
+            }
+            
+            console.log('[morph] Avatar landmarks detected:', avatarLandmarks.length, 'points');
+            
+            // P0: Create triangulation
+            if (window.FacialMorph && window.Delaunator) {
+                avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
+                morphingEnabled = true;
+                updateStatus('Facial morphing ready! Camera starting...');
+                console.log('[morph] Triangulation created, morphing enabled');
+            } else {
+                console.warn('[morph] Delaunator not available, fallback to rotation mode');
+                morphingEnabled = false;
+                updateStatus('Basic animation ready (morphing unavailable)');
+            }
+        } else {
+            console.warn('[morph] No face detected in avatar, using fallback mode');
+            morphingEnabled = false;
+            updateStatus('No face detected - using basic rotation mode');
+        }
+        
+    } catch (error) {
+        console.error('[morph] Avatar analysis failed:', error);
+        morphingEnabled = false;
+        updateStatus('Face analysis failed - using basic rotation mode');
+    }
+}
+
+/**
+ * Initialize webcam and face tracking
+ */
+async function initPreview() {
+    if (previewRunning) {
+        console.log('[morph] Preview already running');
+        return;
+    }
+    
+    console.log('[morph] Initializing webcam and face tracking...');
     previewRunning = true;
     
     try {
@@ -110,7 +202,7 @@ async function initPreview() {
         });
         
         cam.srcObject = stream;
-        console.log('[preview] Webcam started');
+        console.log('[morph] Webcam started');
         
         // Wait for MediaPipe to be available
         await waitForMediaPipe();
@@ -127,7 +219,12 @@ async function initPreview() {
             minTrackingConfidence: 0.5
         });
         
-        faceMesh.onResults(onFace);
+        faceMesh.onResults(onFaceResults);
+        
+        // If avatar wasn't analyzed yet, do it now
+        if (avatarImg && !avatarLandmarks) {
+            await analyzeAvatarFace();
+        }
         
         // Initialize camera processing
         camera = new Camera(cam, {
@@ -141,12 +238,14 @@ async function initPreview() {
         });
         
         await camera.start();
-        console.log('[preview] Face tracking started');
-        updateStatus('Face tracking active - move your head to see avatar animation!');
+        console.log('[morph] Face tracking started');
+        updateStatus(morphingEnabled ? 
+            'Facial morphing active - move your face!' : 
+            'Basic animation active - no morphing available');
         hideLoading();
         
     } catch (error) {
-        console.error('[preview] Failed to initialize:', error);
+        console.error('[morph] Failed to initialize:', error);
         updateStatus('Camera access denied or face tracking unavailable');
         hideLoading();
         previewRunning = false;
@@ -160,7 +259,7 @@ function waitForMediaPipe() {
     return new Promise((resolve) => {
         const checkLoaded = () => {
             if (window.FaceMesh && window.Camera) {
-                console.log('[preview] MediaPipe loaded');
+                console.log('[morph] MediaPipe loaded');
                 resolve();
             } else {
                 setTimeout(checkLoaded, 100);
@@ -171,77 +270,147 @@ function waitForMediaPipe() {
 }
 
 /**
- * Handle face detection results - simple rotation and mouth demo
+ * P1: Handle face detection results with real-time morphing
  * @param {Object} results - MediaPipe face mesh results
  */
-function onFace(results) {
+function onFaceResults(results) {
     if (!avatarImg || !results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
         return;
     }
     
-    const landmarks = results.multiFaceLandmarks[0];
+    // Performance throttling - target 30 FPS max
+    const now = performance.now();
+    if (now - lastFrameTime < 33) return; // ~30 FPS
+    lastFrameTime = now;
     
-    // Compute head roll from eye corners
-    const leftEye = landmarks[33];   // Left eye outer corner
-    const rightEye = landmarks[263]; // Right eye outer corner
-    const roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
+    const userLandmarks = results.multiFaceLandmarks[0];
     
-    // Compute mouth openness
-    const upperLip = landmarks[13];
-    const lowerLip = landmarks[14];
-    const mouthHeight = Math.abs(lowerLip.y - upperLip.y);
-    const mouthOpen = mouthHeight > 0.01;
+    // Scale user landmarks to canvas coordinates
+    const scaledUserLandmarks = userLandmarks.map(landmark => ({
+        x: landmark.x * avatarCanvas.width,
+        y: landmark.y * avatarCanvas.height,
+        z: landmark.z || 0
+    }));
     
-    console.debug('[preview] roll=', roll.toFixed(3), 'mouth=', mouthOpen);
+    if (morphingEnabled && avatarLandmarks && avatarTriangulation && window.FacialMorph) {
+        // P1: Real-time facial morphing
+        morphAvatarFace(scaledUserLandmarks);
+    } else {
+        // Fallback: Basic rotation and simple effects
+        fallbackAnimation(scaledUserLandmarks);
+    }
     
-    // Animate avatar
-    animateAvatar(roll, mouthOpen);
+    // Performance monitoring
+    frameCount++;
+    if (frameCount % 30 === 0) {
+        const fps = 1000 / (now - lastFrameTime);
+        console.debug(`[morph] Rendering FPS: ${fps.toFixed(1)}`);
+    }
 }
 
 /**
- * Animate avatar with head rotation and mouth effect
- * @param {number} roll - Head roll angle in radians
- * @param {boolean} mouthOpen - Whether mouth is open
+ * P1: Perform real-time facial morphing using triangulation
+ * @param {Array} userLandmarks - Live user facial landmarks
  */
-function animateAvatar(roll, mouthOpen) {
-    if (!avatarImg) return;
+function morphAvatarFace(userLandmarks) {
+    try {
+        // Get optimized triangle set for expressive regions
+        const expressionTriangles = window.FacialMorph.getExpressionTriangles(
+            avatarTriangulation.triangles
+        );
+        
+        // Apply head rotation first
+        const roll = computeHeadRoll(userLandmarks);
+        
+        ctx.save();
+        ctx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
+        
+        // Apply rotation around center
+        ctx.translate(avatarCanvas.width / 2, avatarCanvas.height / 2);
+        ctx.rotate(roll);
+        ctx.translate(-avatarCanvas.width / 2, -avatarCanvas.height / 2);
+        
+        // P1: Morph facial features using triangulation
+        window.FacialMorph.morphFace(
+            avatarSrcCtx,
+            ctx,
+            avatarLandmarks,
+            userLandmarks,
+            expressionTriangles
+        );
+        
+        ctx.restore();
+        
+        // Log performance metrics
+        window.FacialMorph.logMorphPerformance();
+        
+    } catch (error) {
+        console.error('[morph] Morphing failed, falling back:', error);
+        morphingEnabled = false; // Disable morphing on error
+        fallbackAnimation(userLandmarks);
+    }
+}
+
+/**
+ * Fallback animation for when morphing is unavailable
+ * @param {Array} userLandmarks - Live user facial landmarks
+ */
+function fallbackAnimation(userLandmarks) {
+    const roll = computeHeadRoll(userLandmarks);
+    const mouthOpen = computeMouthOpenness(userLandmarks);
     
     const centerX = avatarCanvas.width / 2;
     const centerY = avatarCanvas.height / 2;
     const width = avatarCanvas.width;
     const height = avatarCanvas.height;
     
-    // Clear canvas
+    // Clear and apply basic transforms
     ctx.clearRect(0, 0, width, height);
-    
-    // Save context for transformations
     ctx.save();
     
-    // Move to center and rotate
+    // Rotate around center
     ctx.translate(centerX, centerY);
     ctx.rotate(roll);
     
-    // Draw base avatar
+    // Draw avatar
     ctx.drawImage(avatarImg, -width/2, -height/2, width, height);
     
-    // Simple mouth animation - stretch effect when talking
+    // Simple mouth effect
     if (mouthOpen) {
         ctx.save();
-        ctx.scale(1, 1.05); // Slightly stretch vertically
+        ctx.scale(1, 1.05);
         ctx.globalAlpha = 0.6;
-        
-        // Create mouth area clip (simple ellipse)
         ctx.beginPath();
         ctx.ellipse(0, height * 0.1, width * 0.2, height * 0.08, 0, 0, 2 * Math.PI);
         ctx.clip();
-        
-        // Draw stretched avatar for mouth area
         ctx.drawImage(avatarImg, -width/2, -height/2 + 2, width, height);
         ctx.restore();
     }
     
-    // Restore context
     ctx.restore();
+}
+
+/**
+ * Compute head roll angle from eye corners
+ * @param {Array} landmarks - Face landmarks
+ * @returns {number} Roll angle in radians
+ */
+function computeHeadRoll(landmarks) {
+    const leftEye = landmarks[33];   // Left eye outer corner
+    const rightEye = landmarks[263]; // Right eye outer corner
+    return Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
+}
+
+/**
+ * Compute mouth openness
+ * @param {Array} landmarks - Face landmarks
+ * @returns {boolean} Whether mouth is open
+ */
+function computeMouthOpenness(landmarks) {
+    const upperLip = landmarks[13];
+    const lowerLip = landmarks[14];
+    const mouthHeight = Math.abs(lowerLip.y - upperLip.y);
+    return mouthHeight > 0.01 * avatarCanvas.height; // Scale to canvas
 }
 
 /**
@@ -249,15 +418,15 @@ function animateAvatar(roll, mouthOpen) {
  */
 function startRecording() {
     if (isRecording || !avatarImg) {
-        console.log('[record] Already recording or no avatar loaded');
+        console.log('[morph] Already recording or no avatar loaded');
         return;
     }
     
-    console.log('[record] Starting recording...');
+    console.log('[morph] Starting recording...');
     isRecording = true;
     startBtn.disabled = true;
     startBtn.textContent = '🎬 Recording... (5s)';
-    updateStatus('Recording 5-second animation...');
+    updateStatus('Recording facial morphing animation...');
     
     // Create MediaRecorder from canvas stream
     const stream = avatarCanvas.captureStream(30);
@@ -274,32 +443,42 @@ function startRecording() {
     };
     
     recorder.onstop = () => {
-        console.log('[record] Recording stopped');
+        console.log('[morph] Recording stopped');
         const blob = new Blob(chunks, { type: 'video/webm' });
         
-        // Create download link
+        // Create styled download link
         const url = URL.createObjectURL(blob);
         
-        // Remove existing download link if any
+        // Remove existing download link
         const existingLink = document.querySelector('.download-link');
         if (existingLink) existingLink.remove();
         
         const downloadLink = document.createElement('a');
         downloadLink.href = url;
-        downloadLink.download = 'spromoji-avatar.webm';
-        downloadLink.textContent = '📥 Download Your Animation';
+        downloadLink.download = `spromoji-morph-${Date.now()}.webm`;
+        downloadLink.textContent = '📥 Download Your Morphing Animation';
         downloadLink.className = 'download-link';
         downloadLink.style.cssText = `
             display: block;
             margin-top: 15px;
-            padding: 10px 20px;
+            padding: 12px 24px;
             background: linear-gradient(45deg, #28a745, #20c997);
             color: white;
             text-decoration: none;
-            border-radius: 8px;
+            border-radius: 10px;
             text-align: center;
             font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            transition: transform 0.2s ease;
         `;
+        
+        downloadLink.addEventListener('mouseenter', () => {
+            downloadLink.style.transform = 'translateY(-2px)';
+        });
+        
+        downloadLink.addEventListener('mouseleave', () => {
+            downloadLink.style.transform = 'translateY(0)';
+        });
         
         startBtn.parentNode.appendChild(downloadLink);
         
@@ -307,9 +486,9 @@ function startRecording() {
         isRecording = false;
         startBtn.disabled = false;
         startBtn.textContent = '🎬 Start Recording';
-        updateStatus('Recording complete! Click the download link above.');
+        updateStatus(`Recording complete! ${morphingEnabled ? 'Morphing' : 'Basic'} animation saved.`);
         
-        console.log('[record] Download link created, blob size:', blob.size, 'bytes');
+        console.log('[morph] Download link created, blob size:', blob.size, 'bytes');
     };
     
     recorder.start();
@@ -330,7 +509,7 @@ function updateStatus(message) {
     if (statusText) {
         statusText.textContent = message;
     }
-    console.log('[status]', message);
+    console.log('[morph]', message);
 }
 
 /**
@@ -346,24 +525,24 @@ function hideLoading() {
  * Initialize the application
  */
 async function initializeApp() {
-    console.log('[app] Initializing...');
+    console.log('[morph] Initializing facial morphing system...');
     
     // Check for avatar URL parameter
     const urlParams = new URLSearchParams(window.location.search);
     const avatarUrl = urlParams.get('avatar');
     
     if (avatarUrl) {
-        console.log('[app] Found avatar URL parameter:', avatarUrl);
+        console.log('[morph] Found avatar URL parameter:', avatarUrl);
         try {
             const decodedUrl = decodeURIComponent(avatarUrl);
             await loadAvatar(decodedUrl);
         } catch (error) {
-            console.error('[app] Failed to load avatar from URL:', error);
+            console.error('[morph] Failed to load avatar from URL:', error);
             updateStatus('Failed to load avatar. Please upload an image.');
             hideLoading();
         }
     } else {
-        console.log('[app] No avatar URL found');
+        console.log('[morph] No avatar URL found');
         updateStatus('Please upload an avatar image to begin.');
         hideLoading();
     }
@@ -375,13 +554,13 @@ startBtn.addEventListener('click', startRecording);
 avatarInput.addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (file) {
-        console.log('[upload] Processing uploaded file:', file.name);
+        console.log('[morph] Processing uploaded file:', file.name);
         const url = URL.createObjectURL(file);
         try {
             await loadAvatar(url);
-            updateStatus('Avatar uploaded! Face tracking active.');
+            updateStatus('Avatar uploaded! Facial analysis complete.');
         } catch (error) {
-            console.error('[upload] Failed to load uploaded image:', error);
+            console.error('[morph] Failed to load uploaded image:', error);
             updateStatus('Failed to load uploaded image.');
         }
     }
@@ -389,8 +568,9 @@ avatarInput.addEventListener('change', async (event) => {
 
 // Global error handling
 window.addEventListener('error', (event) => {
-    console.error('[error] Global error:', event.error);
-    updateStatus('An error occurred. Please refresh the page.');
+    console.error('[morph] Global error:', event.error);
+    updateStatus('An error occurred. Falling back to basic mode.');
+    morphingEnabled = false; // Disable morphing on critical errors
 });
 
 // Initialize when DOM is ready
@@ -400,4 +580,37 @@ if (document.readyState === 'loading') {
     initializeApp();
 }
 
-console.log('[preview] SPROMOJI script loaded successfully'); 
+console.log('[morph] SPROMOJI Facial Morphing system loaded successfully');
+
+/* TODO: Phase P2 - Advanced Morphing Features
+ * 
+ * 1. Enhanced Facial Expressions:
+ *    - Eyebrow movement detection and morphing
+ *    - Cheek puffing and smile intensity
+ *    - Nostril flaring and nose wrinkling
+ *    - Forehead wrinkle mapping
+ * 
+ * 2. Performance Optimizations:
+ *    - WebGL-based morphing for 60 FPS on mobile
+ *    - Level-of-detail (LOD) triangle reduction
+ *    - Adaptive quality based on device performance
+ *    - Background processing with Web Workers
+ * 
+ * 3. Advanced Visual Effects:
+ *    - Real-time lighting adjustment
+ *    - Skin texture enhancement
+ *    - Hair movement simulation
+ *    - Environmental reflection mapping
+ * 
+ * 4. Multi-Avatar Support:
+ *    - Switch between multiple stored avatars
+ *    - Avatar blending and morphing
+ *    - Style transfer between different faces
+ *    - Real-time avatar generation from photos
+ * 
+ * Implementation targets:
+ *    - 60 FPS on mobile devices
+ *    - Sub-16ms frame time budget
+ *    - 4K video recording support
+ *    - WebRTC streaming capabilities
+ */ 
