@@ -2,6 +2,7 @@
 import os
 import asyncio
 import threading
+import urllib.parse
 from dotenv import load_dotenv
 
 from flask import Flask, request, render_template
@@ -54,10 +55,25 @@ def webhook():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a button that opens the WebApp."""
-    keyboard = [
-        [KeyboardButton("Open Spromoji", web_app=WebAppInfo(url=WEB_APP_URL))]
-    ]
+    """Send a button that opens the WebApp with the user's profile photo."""
+
+    avatar_url = None
+    try:
+        photos = await context.bot.get_user_profile_photos(update.effective_user.id, limit=1)
+        if photos.total_count:
+            file_id = photos.photos[0][-1].file_id
+            file = await context.bot.get_file(file_id)
+            avatar_url = file.file_path
+    except Exception as e:
+        print(f"Failed to fetch profile photo: {e}")
+
+    url = WEB_APP_URL
+    if avatar_url:
+        encoded = urllib.parse.quote_plus(avatar_url)
+        separator = '&' if '?' in url else '?'
+        url = f"{url}{separator}avatar={encoded}"
+
+    keyboard = [[KeyboardButton("Open Spromoji", web_app=WebAppInfo(url=url))]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
         "Welcome! Tap the button below to launch Spromoji.",

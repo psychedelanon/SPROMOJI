@@ -1,107 +1,153 @@
-// Basic face tracking and avatar animation logic
-// This script uses MediaPipe FaceMesh to detect landmarks and draws a simple
-// avatar representation on a canvas. Recording is handled via the MediaRecorder
-// API on the canvas stream.
+import { FaceMesh } from 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js';
+import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
+import * as THREE from 'https://unpkg.com/three@0.161.1/build/three.module.js';
 
-document.addEventListener('DOMContentLoaded', () => {
-  const tg = window.Telegram.WebApp;
-  if (tg && tg.expand) tg.expand();
+const tg = window.Telegram.WebApp;
+if (tg && tg.expand) tg.expand();
 
-  const video = document.getElementById('video');
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
-  const avatarImg = document.getElementById('avatar');
-  const avatarInput = document.getElementById('avatarInput');
-  const startBtn = document.getElementById('startBtn');
+const canvas = document.getElementById('avatarCanvas');
+const cam = document.getElementById('cam');
+const avatarInput = document.getElementById('avatarInput');
 
-  // Load selected avatar image
-  avatarInput.addEventListener('change', (e) => {
+let avatarImg = null;
+let renderer, scene, camera3D, mesh;
+
+function resizeCanvas() {
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+  if (renderer) {
+    renderer.setSize(canvas.width, canvas.height);
+    camera3D.aspect = canvas.width / canvas.height;
+    camera3D.updateProjectionMatrix();
+  }
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+async function loadAvatar(src) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await img.decode();
+  return img;
+}
+
+async function initScene() {
+  renderer = new THREE.WebGLRenderer({ canvas, alpha: true });
+  scene = new THREE.Scene();
+  camera3D = new THREE.PerspectiveCamera(
+    45,
+    canvas.width / canvas.height,
+    0.1,
+    100
+  );
+  camera3D.position.z = 2;
+
+  const tex = new THREE.Texture(avatarImg);
+  tex.needsUpdate = true;
+  const geo = new THREE.PlaneGeometry(
+    1,
+    avatarImg.height / avatarImg.width
+  );
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex,
+    transparent: true,
+  });
+  mesh = new THREE.Mesh(geo, mat);
+  scene.add(mesh);
+}
+
+function animateMesh(pose, blink, mouthOpen) {
+  if (!mesh) return;
+  mesh.rotation.y = pose.yaw * 1.8;
+  mesh.rotation.x = pose.pitch * 1.8;
+  mesh.rotation.z = -pose.roll;
+  mesh.scale.y = mouthOpen ? 1.05 : 1;
+  if (blink) {
+    mesh.material.opacity = 0.7;
+    setTimeout(() => (mesh.material.opacity = 1), 100);
+  }
+  renderer.render(scene, camera3D);
+}
+
+const IDX_NOSE = 1,
+  IDX_LEFT = 234,
+  IDX_RIGHT = 454,
+  IDX_CHIN = 152,
+  IDX_FORE = 10;
+
+function estimatePose(l) {
+  const yaw = Math.atan2(l[IDX_RIGHT].x - l[IDX_LEFT].x, l[IDX_RIGHT].z - l[IDX_LEFT].z);
+  const pitch = Math.atan2(l[IDX_CHIN].y - l[IDX_FORE].y, l[IDX_CHIN].z - l[IDX_FORE].z);
+  const roll = Math.atan2(l[33].y - l[263].y, l[33].x - l[263].x);
+  return { yaw, pitch, roll };
+}
+
+function dist(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function detectBlink(l) {
+  const left = dist(l[159], l[145]) / dist(l[33], l[133]);
+  const right = dist(l[386], l[374]) / dist(l[362], l[263]);
+  return (left + right) / 2 < 0.23;
+}
+
+function detectMouthOpen(l) {
+  const mouth = dist(l[13], l[14]);
+  const face = dist(l[10], l[152]);
+  return mouth / face > 0.08;
+}
+
+async function setupAvatarFromPhoto(src) {
+  avatarImg = await loadAvatar(src);
+  if (!renderer) await initScene();
+}
+
+async function main() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const startParams = new URLSearchParams(tg?.initDataUnsafe?.start_param || '');
+  const avatarParam = startParams.get('avatar') || urlParams.get('avatar');
+  const userPhoto = avatarParam || tg?.initDataUnsafe?.user?.photo_url;
+  if (userPhoto) {
+    await setupAvatarFromPhoto(userPhoto);
+  }
+
+  avatarInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const url = URL.createObjectURL(file);
-    avatarImg.src = url;
-    avatarImg.onload = () => URL.revokeObjectURL(url);
-    avatarImg.style.display = 'none';
+    await setupAvatarFromPhoto(url);
+    URL.revokeObjectURL(url);
   });
 
-  // Request access to webcam
-  navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
-    video.srcObject = stream;
-    video.play();
-
-    const faceMesh = new FaceMesh({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
-    });
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
-    faceMesh.onResults(onResults);
-
-    const camera = new Camera(video, {
-      onFrame: async () => {
-        await faceMesh.send({ image: video });
-      },
-      width: 640,
-      height: 480,
-    });
-    camera.start();
+  const facemesh = new FaceMesh({
+    locateFile: (f) =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`,
+  });
+  facemesh.setOptions({
+    selfieMode: true,
+    maxNumFaces: 1,
+    refineLandmarks: true,
   });
 
-  function onResults(results) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (avatarImg.complete) {
-      ctx.drawImage(avatarImg, 0, 0, canvas.width, canvas.height);
-    }
-
-    if (results.multiFaceLandmarks && results.multiFaceLandmarks[0]) {
-      const landmarks = results.multiFaceLandmarks[0];
-      // Simple example: draw circles over eyes and mouth position
-      const leftEye = landmarks[468];
-      const rightEye = landmarks[473];
-      const mouth = landmarks[13];
-      const scaleX = canvas.width;
-      const scaleY = canvas.height;
-      ctx.fillStyle = 'rgba(0, 255, 0, 0.5)';
-      ctx.beginPath();
-      ctx.arc(leftEye.x * scaleX, leftEye.y * scaleY, 10, 0, 2 * Math.PI);
-      ctx.arc(rightEye.x * scaleX, rightEye.y * scaleY, 10, 0, 2 * Math.PI);
-      ctx.arc(mouth.x * scaleX, mouth.y * scaleY, 15, 0, 2 * Math.PI);
-      ctx.fill();
-    }
-  }
-
-  // Handle recording of the canvas animation
-  let recorder;
-  let chunks = [];
-
-  startBtn.addEventListener('click', () => {
-    if (!recorder) {
-      const stream = canvas.captureStream(30);
-      recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
-      recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'avatar.webm';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        chunks = [];
-      };
-      recorder.start();
-      startBtn.textContent = 'Stop Recording';
-    } else if (recorder.state === 'recording') {
-      recorder.stop();
-      recorder = null;
-      startBtn.textContent = 'Start Recording';
-    }
+  facemesh.onResults((res) => {
+    if (!avatarImg || !res.multiFaceLandmarks.length) return;
+    const l = res.multiFaceLandmarks[0];
+    const pose = estimatePose(l);
+    const blink = detectBlink(l);
+    const mouthOpen = detectMouthOpen(l);
+    animateMesh(pose, blink, mouthOpen);
   });
-});
+
+  const camera = new Camera(cam, {
+    onFrame: async () => {
+      await facemesh.send({ image: cam });
+    },
+  });
+  camera.start();
+}
+
+main();
