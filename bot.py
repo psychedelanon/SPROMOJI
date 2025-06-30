@@ -3,9 +3,10 @@ import os
 import asyncio
 import threading
 import urllib.parse
+import requests
 from dotenv import load_dotenv
 
-from flask import Flask, request, render_template
+from flask import Flask, request, render_template, make_response
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -26,6 +27,9 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 loop = None
 loop_thread = None
 
+# File cache for avatar proxy - maps file_unique_id to file_path
+file_cache = {}
+
 
 def run_async(coro):
     """Run async coroutine in the background event loop."""
@@ -40,6 +44,36 @@ def run_async(coro):
 def index():
     """Serve the WebApp's main page."""
     return render_template("index.html")
+
+
+@app.route("/avatar/<uid>.jpg")
+def serve_avatar(uid: str):
+    """Proxy avatar images from Telegram to avoid CORS issues."""
+    # uid == Telegram file_unique_id
+    tg_path = file_cache.get(uid)
+    if not tg_path:
+        print(f"Avatar not found in cache: {uid}")
+        return "Not Found", 404
+    
+    tg_url = f"https://api.telegram.org/file/bot{TOKEN}/{tg_path}"
+    print(f"Proxying avatar: {tg_url}")
+    
+    try:
+        resp = requests.get(tg_url, timeout=10)
+        if not resp.ok:
+            print(f"Upstream error fetching avatar: {resp.status_code}")
+            return "Upstream error", 502
+        
+        out = make_response(resp.content)
+        out.headers["Content-Type"] = "image/jpeg"
+        out.headers["Cache-Control"] = "public,max-age=86400"
+        out.headers["Access-Control-Allow-Origin"] = "*"
+        print(f"Avatar served successfully: {len(resp.content)} bytes")
+        return out
+        
+    except Exception as e:
+        print(f"Error proxying avatar: {e}")
+        return "Server Error", 500
 
 
 @app.route("/webhook", methods=["POST"])
@@ -63,18 +97,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if photos.total_count:
             file_id = photos.photos[0][-1].file_id
             file = await context.bot.get_file(file_id)
-            # Debug: print what we get from Telegram
+            
             print(f"Debug - file.file_path: {file.file_path}")
             print(f"Debug - file.file_unique_id: {file.file_unique_id}")
             
-            # Check if file_path is already a full URL or just a path
-            if file.file_path.startswith('https://'):
-                avatar_url = file.file_path
-            else:
-                # Construct the full URL to the Telegram file
-                avatar_url = f"https://api.telegram.org/file/bot{TOKEN}/{file.file_path}"
+            # Cache the file path for the proxy route
+            file_cache[file.file_unique_id] = file.file_path
+            print(f"Debug - Cached file path for {file.file_unique_id}")
             
-            print(f"Debug - Final avatar_url: {avatar_url}")
+            # Use our proxy URL instead of direct Telegram URL
+            avatar_url = f"/avatar/{file.file_unique_id}.jpg"
+            print(f"Debug - Proxy avatar_url: {avatar_url}")
+            
     except Exception as e:
         print(f"Failed to fetch profile photo: {e}")
 
