@@ -47,8 +47,11 @@ async function loadAvatar(src) {
         await drawImage(src);
         console.debug('[morph] Avatar loaded successfully');
         
-        // P0: Analyze avatar for facial landmarks
-        await analyzeAvatarFace();
+        // P0: Try to analyze avatar for facial landmarks (will defer if MediaPipe not ready)
+        const analysisSuccess = await analyzeAvatarFace();
+        if (!analysisSuccess) {
+            console.log('[morph] Avatar analysis deferred - will retry when MediaPipe ready');
+        }
         
     } catch (e) {
         console.warn('[morph] Primary load failed, trying CORS fallback');
@@ -59,12 +62,16 @@ async function loadAvatar(src) {
             await drawImage(localUrl);
             console.debug('[morph] Fallback load successful');
             
-            // P0: Analyze avatar for facial landmarks
-            await analyzeAvatarFace();
+            // P0: Try to analyze avatar for facial landmarks (will defer if MediaPipe not ready)
+            const analysisSuccess = await analyzeAvatarFace();
+            if (!analysisSuccess) {
+                console.log('[morph] Avatar analysis deferred - will retry when MediaPipe ready');
+            }
             
         } catch (fallbackError) {
             console.error('[morph] Both loading methods failed:', fallbackError);
             updateStatus('Failed to load avatar image');
+            hideLoading(); // Make sure loading is hidden on failure
             throw fallbackError;
         }
     }
@@ -104,7 +111,7 @@ function drawImage(url) {
             ctx.drawImage(img, 0, 0, scaledWidth, scaledHeight);
             avatarSrcCtx.drawImage(img, 0, 0, scaledWidth, scaledHeight);
             
-            updateStatus('Avatar loaded! Analyzing facial structure...');
+            updateStatus('Avatar loaded! Preparing face tracking...');
             resolve();
         };
         
@@ -124,25 +131,30 @@ function drawImage(url) {
 async function analyzeAvatarFace() {
     if (!faceMesh) {
         console.log('[morph] FaceMesh not ready, will analyze later');
-        return;
+        return false;
     }
     
     console.log('[morph] Analyzing avatar facial structure...');
     updateStatus('Detecting facial landmarks...');
     
     try {
-        // Send avatar to MediaPipe for landmark detection
-        const results = await new Promise((resolve) => {
-            const originalHandler = faceMesh.onResults;
-            
-            // Temporary handler for avatar analysis
-            faceMesh.onResults = (results) => {
-                faceMesh.onResults = originalHandler; // Restore original handler
-                resolve(results);
-            };
-            
-            faceMesh.send({ image: avatarSrcCanvas });
-        });
+        // Send avatar to MediaPipe for landmark detection with timeout
+        const results = await Promise.race([
+            new Promise((resolve) => {
+                const originalHandler = faceMesh.onResults;
+                
+                // Temporary handler for avatar analysis
+                faceMesh.onResults = (results) => {
+                    faceMesh.onResults = originalHandler; // Restore original handler
+                    resolve(results);
+                };
+                
+                faceMesh.send({ image: avatarSrcCanvas });
+            }),
+            new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Avatar analysis timeout')), 5000)
+            )
+        ]);
         
         if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
             avatarLandmarks = results.multiFaceLandmarks[0];
@@ -161,21 +173,25 @@ async function analyzeAvatarFace() {
                 morphingEnabled = true;
                 updateStatus('Facial morphing ready! Camera starting...');
                 console.log('[morph] Triangulation created, morphing enabled');
+                return true;
             } else {
                 console.warn('[morph] Delaunator not available, fallback to rotation mode');
                 morphingEnabled = false;
                 updateStatus('Basic animation ready (morphing unavailable)');
+                return false;
             }
         } else {
             console.warn('[morph] No face detected in avatar, using fallback mode');
             morphingEnabled = false;
             updateStatus('No face detected - using basic rotation mode');
+            return false;
         }
         
     } catch (error) {
         console.error('[morph] Avatar analysis failed:', error);
         morphingEnabled = false;
         updateStatus('Face analysis failed - using basic rotation mode');
+        return false;
     }
 }
 
@@ -221,9 +237,13 @@ async function initPreview() {
         
         faceMesh.onResults(onFaceResults);
         
-        // If avatar wasn't analyzed yet, do it now
+        // If avatar wasn't analyzed yet, do it now that MediaPipe is ready
         if (avatarImg && !avatarLandmarks) {
-            await analyzeAvatarFace();
+            console.log('[morph] MediaPipe ready, analyzing avatar now...');
+            const analysisSuccess = await analyzeAvatarFace();
+            if (!analysisSuccess) {
+                console.log('[morph] Avatar analysis failed, continuing with basic mode');
+            }
         }
         
         // Initialize camera processing
@@ -526,6 +546,19 @@ function hideLoading() {
  */
 async function initializeApp() {
     console.log('[morph] Initializing facial morphing system...');
+    
+    // Failsafe: ensure loading indicator is hidden after 10 seconds max
+    setTimeout(() => {
+        if (loadingIndicator && loadingIndicator.style.display !== 'none') {
+            console.warn('[morph] Forcing loading indicator to hide after timeout');
+            hideLoading();
+            if (!avatarImg) {
+                updateStatus('Please upload an avatar image to begin.');
+            } else if (!morphingEnabled) {
+                updateStatus('Basic animation mode active');
+            }
+        }
+    }, 10000);
     
     // Check for avatar URL parameter
     const urlParams = new URLSearchParams(window.location.search);
