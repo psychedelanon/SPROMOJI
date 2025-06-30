@@ -98,9 +98,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     avatar_url = None
     try:
-        photos = await context.bot.get_user_profile_photos(update.effective_user.id, limit=1)
+        # Get the most recent profile photo (limit=1 gets the newest)
+        photos = await context.bot.get_user_profile_photos(update.effective_user.id, limit=1, offset=0)
         if photos.total_count:
-            file_id = photos.photos[0][-1].file_id
+            # Get the highest resolution version of the most recent photo
+            file_id = photos.photos[0][-1].file_id  # -1 gets highest resolution
             file = await context.bot.get_file(file_id)
             
             print(f"Debug - file.file_path: {file.file_path}")

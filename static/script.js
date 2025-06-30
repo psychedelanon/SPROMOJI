@@ -165,19 +165,33 @@ async function analyzeAvatarFace() {
                 landmark.y *= avatarCanvas.height;
             }
             
-            console.log('[morph] Avatar landmarks detected:', avatarLandmarks.length, 'points');
+            console.log('[morph] ✅ Avatar landmarks detected:', avatarLandmarks.length, 'points');
+            console.log('[morph] Sample landmarks:', {
+                nose: avatarLandmarks[1],
+                leftEye: avatarLandmarks[33],
+                rightEye: avatarLandmarks[263],
+                mouth: avatarLandmarks[13]
+            });
             
             // P0: Create triangulation
+            console.log('[morph] Dependencies check - FacialMorph:', !!window.FacialMorph, 'Delaunator:', !!window.Delaunator);
             if (window.FacialMorph && window.Delaunator) {
-                avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
-                morphingEnabled = true;
-                updateStatus('Facial morphing ready! Camera starting...');
-                console.log('[morph] Triangulation created, morphing enabled');
-                return true;
+                try {
+                    avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
+                    morphingEnabled = true;
+                    updateStatus('Facial morphing ready! Camera starting...');
+                    console.log('[morph] ✅ Triangulation created, morphing enabled');
+                    return true;
+                } catch (triangulationError) {
+                    console.error('[morph] ❌ Triangulation failed:', triangulationError);
+                    morphingEnabled = false;
+                    updateStatus('Triangulation failed - using basic rotation mode');
+                    return false;
+                }
             } else {
-                console.warn('[morph] Delaunator not available, fallback to rotation mode');
+                console.warn('[morph] ❌ Missing dependencies - FacialMorph:', !!window.FacialMorph, 'Delaunator:', !!window.Delaunator);
                 morphingEnabled = false;
-                updateStatus('Basic animation ready (morphing unavailable)');
+                updateStatus('Morphing libraries not loaded - using basic rotation mode');
                 return false;
             }
         } else {
