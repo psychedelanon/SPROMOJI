@@ -1,11 +1,51 @@
-import { FaceMesh } from 'https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js';
-import { Camera } from 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js';
-import * as THREE from 'https://unpkg.com/three@0.161.1/build/three.module.js';
+// Global variables for MediaPipe
+let FaceMesh = null;
+let Camera = null;
+let THREE = null;
+
+console.log('🌟 SPROMOJI WebApp starting...');
+
+// IMMEDIATE emergency timeout - force hide loading NOW
+setTimeout(() => {
+  console.log('🚨 EMERGENCY: Force hiding loading screen NOW');
+  const loading = document.getElementById('loading');
+  if (loading) {
+    loading.style.display = 'none';
+  }
+  const status = document.getElementById('status');
+  if (status) {
+    status.textContent = 'Basic mode active. Upload an avatar image to continue.';
+  }
+}, 1000);
+
+// Load MediaPipe asynchronously
+async function loadMediaPipe() {
+  try {
+    console.log('📦 Attempting MediaPipe imports...');
+    const [faceModule, cameraModule, threeModule] = await Promise.all([
+      import('https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js').catch(() => null),
+      import('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js').catch(() => null),
+      import('https://unpkg.com/three@0.161.1/build/three.module.js').catch(() => null)
+    ]);
+    
+    if (faceModule && cameraModule && threeModule) {
+      FaceMesh = faceModule.FaceMesh;
+      Camera = cameraModule.Camera;
+      THREE = threeModule.default || threeModule;
+      console.log('✅ All imports successful');
+      return true;
+    } else {
+      console.log('❌ Some imports failed');
+      return false;
+    }
+  } catch (error) {
+    console.error('❌ Import failed:', error);
+    return false;
+  }
+}
 
 const tg = window.Telegram.WebApp;
 if (tg && tg.expand) tg.expand();
-
-console.log('🌟 SPROMOJI WebApp started!');
 
 const canvas = document.getElementById('avatarCanvas');
 const cam = document.getElementById('cam');
@@ -43,15 +83,16 @@ function hideLoading() {
   }
 }
 
-// Emergency timeout to prevent infinite loading
+// Super aggressive emergency timeout
 setTimeout(() => {
-  console.log('🚨 Emergency timeout: Force hiding loading screen');
+  console.log('🚨 SUPER EMERGENCY: Forcing app to work');
   hideLoading();
-  updateStatus('App ready! Please wait for face tracking to initialize...');
-}, 2000);
+  updateStatus('App ready! Upload an avatar image to continue.');
+  startBasicMode();
+}, 500);
 
 // Initial status update
-updateStatus('Initializing SPROMOJI...');
+updateStatus('Starting SPROMOJI...');
 
 function resizeCanvas() {
   canvas.width = canvas.clientWidth;
@@ -236,9 +277,25 @@ function stopRecording() {
 async function main() {
   console.log('🚀 Starting SPROMOJI initialization...');
   
-  // Add immediate debug logging
-  console.log('MediaPipe imports available:', { FaceMesh: typeof FaceMesh, Camera: typeof Camera });
+  // Immediate status update
+  updateStatus('Setting up SPROMOJI...');
+  
+  // Check if imports succeeded
+  console.log('MediaPipe imports available:', { 
+    FaceMesh: FaceMesh ? 'loaded' : 'failed', 
+    Camera: Camera ? 'loaded' : 'failed',
+    THREE: THREE ? 'loaded' : 'failed'
+  });
   console.log('Canvas elements:', { canvas, cam, avatarInput });
+  
+  // Hide loading and start basic mode if imports failed
+  if (!FaceMesh || !Camera || !THREE) {
+    console.log('🔄 Starting basic mode due to import failures');
+    hideLoading();
+    updateStatus('Running in basic mode. Upload an avatar to see it displayed.');
+    startBasicMode();
+    return;
+  }
   
   let facemesh = null;
   let camera = null;
@@ -398,48 +455,83 @@ async function main() {
   console.log('🎉 SPROMOJI initialization complete!');
 }
 
-// Fallback initialization if MediaPipe fails
-async function fallbackMode() {
-  console.log('🔄 Starting fallback mode without face tracking...');
-  hideLoading();
-  updateStatus('Running in basic mode. Upload an avatar to see it displayed.');
+// Basic mode when MediaPipe is not available
+function startBasicMode() {
+  console.log('🔄 Starting basic mode without face tracking...');
   
-  // Set up basic recording without face tracking
-  startBtn.addEventListener('click', () => {
-    if (!avatarImg) {
-      updateStatus('Please select an avatar image first!');
-      return;
-    }
-    
-    // Simple canvas recording without face mesh
-    updateStatus('Recording static avatar...');
-    const canvasStream = canvas.captureStream(30);
-    const recorder = new MediaRecorder(canvasStream);
-    const chunks = [];
-    
-    recorder.ondataavailable = e => chunks.push(e.data);
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'spromoji_static.webm';
-      a.click();
-      updateStatus('Static recording saved!');
-    };
-    
-    recorder.start();
-    setTimeout(() => recorder.stop(), 3000);
-  });
+  // Set up basic avatar display and recording
+  if (startBtn && !startBtn.hasBasicListener) {
+    startBtn.hasBasicListener = true;
+    startBtn.addEventListener('click', () => {
+      if (!avatarImg) {
+        updateStatus('Please select an avatar image first!');
+        return;
+      }
+      
+      // Simple canvas recording without face mesh
+      updateStatus('Recording static avatar...');
+      
+      try {
+        const canvasStream = canvas.captureStream(30);
+        const recorder = new MediaRecorder(canvasStream);
+        const chunks = [];
+        
+        recorder.ondataavailable = e => chunks.push(e.data);
+        recorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'spromoji_static.webm';
+          a.click();
+          updateStatus('Static recording saved!');
+        };
+        
+        recorder.start();
+        setTimeout(() => recorder.stop(), 3000);
+      } catch (error) {
+        console.error('Recording error:', error);
+        updateStatus('Recording failed. Browser may not support this feature.');
+      }
+    });
+  }
 }
 
-// Initialize with error handling
-try {
-  main().catch(error => {
-    console.error('❌ Main initialization failed:', error);
-    fallbackMode();
-  });
-} catch (error) {
-  console.error('❌ Critical initialization error:', error);
-  fallbackMode();
+// Fallback initialization if MediaPipe fails during runtime
+async function fallbackMode() {
+  console.log('🔄 Entering runtime fallback mode...');
+  hideLoading();
+  updateStatus('Face tracking failed. Running in basic mode.');
+  startBasicMode();
 }
+
+// Initialize everything
+async function initializeApp() {
+  console.log('🚀 App initialization starting...');
+  
+  // Try to load MediaPipe
+  const mediaLoaded = await loadMediaPipe();
+  
+  if (mediaLoaded) {
+    console.log('📱 Starting with face tracking...');
+    try {
+      await main();
+    } catch (error) {
+      console.error('❌ Main initialization failed:', error);
+      fallbackMode();
+    }
+  } else {
+    console.log('🔄 Starting in basic mode...');
+    hideLoading();
+    updateStatus('Running in basic mode. Upload an avatar image to continue.');
+    startBasicMode();
+  }
+}
+
+// Start the app
+initializeApp().catch(error => {
+  console.error('❌ Critical initialization error:', error);
+  hideLoading();
+  updateStatus('Error loading app. Refresh page to try again.');
+  startBasicMode();
+});
