@@ -44,11 +44,23 @@ window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
 async function loadAvatar(src) {
-  const img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.src = src;
-  await img.decode();
-  return img;
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    
+    img.onload = () => {
+      console.log('Avatar image loaded successfully');
+      resolve(img);
+    };
+    
+    img.onerror = (error) => {
+      console.error('Failed to load avatar image:', error);
+      console.error('Image src was:', src);
+      reject(new Error('Failed to load avatar image'));
+    };
+    
+    img.src = src;
+  });
 }
 
 async function initScene() {
@@ -250,8 +262,14 @@ async function main() {
   
   if (userPhoto) {
     console.log('Loading avatar from URL:', userPhoto);
-    await setupAvatarFromPhoto(userPhoto);
-    await startPreview(); // Start preview as soon as avatar is loaded
+    try {
+      await setupAvatarFromPhoto(userPhoto);
+      await startPreview(); // Start preview as soon as avatar is loaded
+    } catch (error) {
+      console.error('Failed to load Telegram avatar, starting preview anyway:', error);
+      updateStatus('Failed to load profile photo. Please upload an image or try again.');
+      await startPreview(); // Start preview even if avatar fails
+    }
   }
 
   // Handle file input for avatar upload
@@ -284,6 +302,17 @@ async function main() {
     updateStatus('Please upload an avatar image to get started!');
     await startPreview();
   }
+  
+  // Ensure loading indicator disappears after a timeout
+  setTimeout(() => {
+    if (loadingIndicator && loadingIndicator.style.display !== 'none') {
+      console.log('Timeout: Hiding loading indicator');
+      hideLoading();
+      if (!avatarImg) {
+        updateStatus('Ready! Upload an avatar image to get started.');
+      }
+    }
+  }, 5000); // 5 second timeout
 }
 
 main();

@@ -63,8 +63,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if photos.total_count:
             file_id = photos.photos[0][-1].file_id
             file = await context.bot.get_file(file_id)
-            # Construct the full URL to the Telegram file
-            avatar_url = f"https://api.telegram.org/file/bot{TOKEN}/{file.file_path}"
+            # Debug: print what we get from Telegram
+            print(f"Debug - file.file_path: {file.file_path}")
+            print(f"Debug - file.file_unique_id: {file.file_unique_id}")
+            
+            # Check if file_path is already a full URL or just a path
+            if file.file_path.startswith('https://'):
+                avatar_url = file.file_path
+            else:
+                # Construct the full URL to the Telegram file
+                avatar_url = f"https://api.telegram.org/file/bot{TOKEN}/{file.file_path}"
+            
+            print(f"Debug - Final avatar_url: {avatar_url}")
     except Exception as e:
         print(f"Failed to fetch profile photo: {e}")
 
