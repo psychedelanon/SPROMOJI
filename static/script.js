@@ -171,10 +171,11 @@ async function loadAvatar(src) {
             // Auto-detection failed - show option to go manual
             updateStatus('Auto-detection failed. Use manual selection or try uploading a clearer photo.');
             console.log('[spromoji] Auto-detection failed, manual mode available');
+            
+            // Start webcam preview only if auto-detection failed
+            await initPreview();
         }
-        
-        // Start webcam preview regardless
-        await initPreview();
+        // If auto-detection succeeded, initPreview() was already called
         
     } catch (error) {
         console.error('[spromoji] Failed to load avatar:', error);
@@ -191,9 +192,11 @@ function handleFileUpload(event) {
     const file = event.target.files[0];
     if (file) {
         const url = URL.createObjectURL(file);
-        loadAvatar(url).then(() => {
-            // Always force manual selection for uploads
-            startManualSelection();
+        loadAvatar(url).then(async () => {
+            // Only start manual selection if auto-detection didn't work
+            if (!animationEnabled) {
+                await startManualSelection();
+            }
         });
     }
 }
@@ -279,6 +282,9 @@ async function tryAutoDetection() {
                 
                 console.log('[spromoji] ✅ Auto-detected features:', Object.keys(avatarRegions));
                 updateStatus('✅ Auto-detected features – try blinking & talking!');
+                
+                // Start webcam preview for auto-detected features
+                await initPreview();
                 return true;
             }
             

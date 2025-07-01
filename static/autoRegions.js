@@ -3,7 +3,7 @@ window.AutoRegions = (function () {
   const PAD = { eye: 1.2, mouth: 1.3 };
 
   function bbox(points, w, h) {
-    let minX=1,minY=1,maxX=0,maxY=0;
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
     points.forEach(p=>{ minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x);
                         minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); });
     return { x:minX*w, y:minY*h, w:(maxX-minX)*w, h:(maxY-minY)*h };
@@ -14,14 +14,23 @@ window.AutoRegions = (function () {
   const MOUTH_IDXS  = [61,291,78,308,12,15,13,14];
 
   return function toRegions(lm, cw, ch) {
+    console.debug('[AutoRegions] Processing landmarks:', lm.length, 'canvas:', cw, 'x', ch);
+    
     const left  = bbox(L_EYE_IDXS.map(i=>lm[i]), cw, ch);
     const right = bbox(R_EYE_IDXS.map(i=>lm[i]), cw, ch);
     const mouth = bbox(MOUTH_IDXS.map(i=>lm[i]), cw, ch);
-    return {
+    
+    console.debug('[AutoRegions] Raw bboxes:', {left, right, mouth});
+    
+    const regions = {
       leftEye:  expand(left , PAD.eye ),
       rightEye: expand(right, PAD.eye ),
       mouth:    expand(mouth, PAD.mouth)
     };
+    
+    console.debug('[AutoRegions] Final regions:', regions);
+    return regions;
+    
     function expand(r,f){ const cx=r.x+r.w/2, cy=r.y+r.h/2;
       return { x:cx-r.w*f/2, y:cy-r.h*f/2, w:r.w*f, h:r.h*f }; }
   };
