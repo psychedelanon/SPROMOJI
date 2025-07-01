@@ -263,20 +263,22 @@ h1 {
 }
 
 .record-btn {
-    background: #0c88ff; /* sonic blue */
+    background: linear-gradient(45deg, #dc2626, #b91c1c);
     border: none;
-    color: #ffe600; /* doge gold */
+    color: white;
     padding: 15px 30px;
     font-size: 1.2rem;
     border-radius: 25px;
     cursor: pointer;
+    font-weight: 600;
     transition: all 0.3s ease;
-    box-shadow: 0 4px 15px rgba(12, 136, 255, 0.4);
+    box-shadow: 0 4px 15px rgba(220, 38, 38, 0.4);
 }
 
 .record-btn:hover:not(:disabled) {
+    background: linear-gradient(45deg, #b91c1c, #991b1b);
     transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(12, 136, 255, 0.6);
+    box-shadow: 0 6px 20px rgba(220, 38, 38, 0.5);
 }
 
 .record-btn:disabled {
