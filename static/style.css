@@ -55,6 +55,26 @@ h1 {
     display: none;
 }
 
+.manual-mode-btn {
+    display: inline-block;
+    margin-left: 15px;
+    padding: 12px 24px;
+    background: linear-gradient(45deg, #ff9800, #f57c00);
+    border: none;
+    color: white;
+    border-radius: 12px;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(255, 152, 0, 0.3);
+}
+
+.manual-mode-btn:hover {
+    background: linear-gradient(45deg, #f57c00, #ef6c00);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(255, 152, 0, 0.5);
+}
+
 .help-text {
     margin-top: 10px;
     font-size: 0.9rem;
@@ -90,6 +110,59 @@ h1 {
     pointer-events: none;
     z-index: 5;
     border-radius: 16px;
+}
+
+.manual-instruction {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 0.9rem;
+    z-index: 10;
+    animation: pulse 2s infinite;
+}
+
+.manual-controls {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 10px;
+    z-index: 10;
+}
+
+.manual-controls button {
+    padding: 8px 16px;
+    background: rgba(255, 255, 255, 0.9);
+    border: none;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: all 0.3s ease;
+}
+
+.manual-controls button:hover {
+    background: white;
+    transform: translateY(-1px);
+}
+
+.manual-controls .cancel-btn {
+    background: rgba(255, 82, 82, 0.9);
+    color: white;
+}
+
+.manual-controls .cancel-btn:hover {
+    background: rgba(255, 82, 82, 1);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
 }
 
 .loading-indicator {

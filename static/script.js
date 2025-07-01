@@ -6,7 +6,7 @@ console.log('[morph] SPROMOJI Facial Morphing starting...');
 
 // DOM elements (initialized in initializeApp)
 let cam, avatarCanvas, debugCanvas, ctx, debugCtx;
-let avatarInput, startBtn, loadingIndicator, statusText;
+let avatarInput, startBtn, loadingIndicator, statusText, manualModeBtn;
 
 // Global state
 let avatarImg = null;
@@ -49,6 +49,7 @@ async function initializeApp() {
     avatarInput = document.getElementById('avatarInput');
     loadingIndicator = document.getElementById('loading');
     statusText = document.getElementById('status');
+    manualModeBtn = document.getElementById('manualModeBtn');
     
     if (!avatarCanvas || !debugCanvas) {
         console.error('[spromoji] Required canvas elements not found');
@@ -68,6 +69,13 @@ async function initializeApp() {
     // Set up event listeners
     if (avatarInput) {
         avatarInput.addEventListener('change', handleFileUpload);
+    }
+    
+    if (manualModeBtn) {
+        manualModeBtn.addEventListener('click', () => {
+            console.log('[spromoji] Manual mode requested by user');
+            startManualSelection();
+        });
     }
     
     startBtn.addEventListener('click', startRecording);
@@ -128,11 +136,24 @@ async function loadAvatar(src) {
         
         console.log('[spromoji] Canvas dimensions set:', avatarCanvas.width, 'x', avatarCanvas.height);
         
-        // Initialize MediaPipe and analyze avatar
-        await initializeMediaPipe();
-        await analyzeAvatarWithRetry();
+        // Show manual mode button
+        if (manualModeBtn) {
+            manualModeBtn.style.display = 'inline-block';
+        }
         
-        // Start webcam preview
+        // Initialize MediaPipe and try auto-detection (but make it optional)
+        await initializeMediaPipe();
+        
+        // Try auto-detection first, but don't force it
+        const autoSuccess = await tryAutoDetection();
+        
+        if (!autoSuccess) {
+            // Auto-detection failed - show option to go manual
+            updateStatus('Auto-detection failed. Use manual selection or try uploading a clearer photo.');
+            console.log('[spromoji] Auto-detection failed, manual mode available');
+        }
+        
+        // Start webcam preview regardless
         await initPreview();
         
     } catch (error) {
@@ -193,9 +214,9 @@ async function initializeMediaPipe() {
 }
 
 /**
- * Analyze avatar with retry logic and downscaling
+ * Try automatic avatar detection (optional, non-blocking)
  */
-async function analyzeAvatarWithRetry() {
+async function tryAutoDetection() {
     console.log('[spromoji] Starting avatar facial analysis...');
     updateStatus('Detecting facial landmarks...');
     
@@ -231,25 +252,8 @@ async function analyzeAvatarWithRetry() {
             console.warn('[spromoji] ❌ Avatar detection failed at', maxSize, 'px');
         }
         
-        // All automatic detection failed - show manual picker
-        console.warn('[spromoji] ❌ Automatic detection failed, showing manual picker');
-        const manualPoints = await showManualPicker();
-        
-        if (manualPoints && manualPoints.length === 3) {
-            avatarLandmarks = createSyntheticLandmarks(manualPoints);
-            manualLandmarks = true;
-            drawDebugPoints(avatarLandmarks.slice(0, 10)); // Show key points only
-            
-            if (window.FacialMorph) {
-                avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
-                morphingEnabled = true;
-                console.log('[spromoji] ✅ Manual landmarks created');
-                return true;
-            }
-        }
-        
-        // Complete failure
-        console.error('[spromoji] ❌ All detection methods failed');
+        // All automatic detection failed
+        console.warn('[spromoji] ❌ Automatic detection failed');
         morphingEnabled = false;
         return false;
         
@@ -319,6 +323,53 @@ async function attemptAvatarDetection(maxSize) {
 }
 
 /**
+ * Start manual landmark selection process
+ */
+async function startManualSelection() {
+    if (!avatarImg) {
+        console.error('[spromoji] No avatar loaded for manual selection');
+        return;
+    }
+    
+    console.log('[spromoji] Starting manual landmark selection');
+    updateStatus('Starting manual selection...');
+    
+    // Clear any existing landmarks
+    avatarLandmarks = null;
+    avatarTriangulation = null;
+    morphingEnabled = false;
+    debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+    
+    try {
+        const manualPoints = await showManualPicker();
+        
+        if (manualPoints && manualPoints.length === 3) {
+            avatarLandmarks = createSyntheticLandmarks(manualPoints);
+            manualLandmarks = true;
+            
+            // Draw key landmarks for visual feedback
+            drawDebugPoints(avatarLandmarks.slice(0, 10));
+            
+            if (window.FacialMorph) {
+                avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
+                morphingEnabled = true;
+                console.log('[spromoji] ✅ Manual landmarks created successfully');
+                updateStatus('Manual landmarks set - limited morphing enabled');
+                return true;
+            }
+        } else {
+            console.log('[spromoji] Manual selection cancelled or failed');
+            updateStatus('Manual selection cancelled. Try again or upload a different image.');
+            return false;
+        }
+    } catch (error) {
+        console.error('[spromoji] Manual selection error:', error);
+        updateStatus('Manual selection failed. Please try again.');
+        return false;
+    }
+}
+
+/**
  * Draw debug landmarks overlay
  * @param {Array} landmarks - Facial landmarks to visualize
  */
@@ -349,16 +400,63 @@ function drawDebugPoints(landmarks) {
 }
 
 /**
- * Show manual 3-point picker interface
- * @returns {Promise<Array>} Array of 3 picked points
+ * Show enhanced manual 3-point picker interface
+ * @returns {Promise<Array>} Array of 3 picked points or null if cancelled
  */
 async function showManualPicker() {
     return new Promise((resolve) => {
-        updateStatus('Tap 3 points: left eye, right eye, mouth center');
-        
         const points = [];
-        let clickHandler;
+        let clickHandler, cancelHandler, resetHandler;
+        let instructionEl, controlsEl;
         
+        // Create instruction overlay
+        instructionEl = document.createElement('div');
+        instructionEl.className = 'manual-instruction';
+        instructionEl.textContent = '👆 Tap the LEFT EYE (1/3)';
+        document.getElementById('stage').appendChild(instructionEl);
+        
+        // Create control buttons
+        controlsEl = document.createElement('div');
+        controlsEl.className = 'manual-controls';
+        controlsEl.innerHTML = `
+            <button class="reset-btn">🔄 Reset</button>
+            <button class="cancel-btn">✕ Cancel</button>
+        `;
+        document.getElementById('stage').appendChild(controlsEl);
+        
+        const resetBtn = controlsEl.querySelector('.reset-btn');
+        const cancelBtn = controlsEl.querySelector('.cancel-btn');
+        
+        // Update instruction text
+        const updateInstruction = (step) => {
+            const instructions = [
+                '👆 Tap the LEFT EYE (1/3)',
+                '👆 Tap the RIGHT EYE (2/3)', 
+                '👆 Tap the MOUTH CENTER (3/3)',
+                '✅ Perfect! Processing...'
+            ];
+            instructionEl.textContent = instructions[step] || instructions[0];
+        };
+        
+        // Reset function
+        const resetSelection = () => {
+            points.length = 0;
+            debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+            updateInstruction(0);
+            console.log('[spromoji] Manual selection reset');
+        };
+        
+        // Cleanup function
+        const cleanup = () => {
+            avatarCanvas.removeEventListener('click', clickHandler);
+            resetBtn.removeEventListener('click', resetHandler);
+            cancelBtn.removeEventListener('click', cancelHandler);
+            avatarCanvas.style.cursor = 'default';
+            instructionEl.remove();
+            controlsEl.remove();
+        };
+        
+        // Click handler for point selection
         clickHandler = (event) => {
             const rect = avatarCanvas.getBoundingClientRect();
             const x = (event.clientX - rect.left) * (avatarCanvas.width / rect.width);
@@ -366,37 +464,59 @@ async function showManualPicker() {
             
             points.push({ x, y });
             
-            // Draw point
-            debugCtx.fillStyle = '#ff0000';
+            // Draw point with different colors for each step
+            const colors = ['#ff4444', '#44ff44', '#4444ff'];
+            debugCtx.fillStyle = colors[points.length - 1] || '#ff4444';
             debugCtx.beginPath();
-            debugCtx.arc(x, y, 4, 0, 2 * Math.PI);
+            debugCtx.arc(x, y, 6, 0, 2 * Math.PI);
             debugCtx.fill();
+            
+            // Add white border for visibility
+            debugCtx.strokeStyle = 'white';
+            debugCtx.lineWidth = 2;
+            debugCtx.stroke();
+            
+            // Add point number
+            debugCtx.fillStyle = 'white';
+            debugCtx.font = 'bold 12px Arial';
+            debugCtx.textAlign = 'center';
+            debugCtx.fillText(points.length.toString(), x, y + 4);
             
             console.log('[spromoji] Manual point', points.length, ':', { x, y });
             
-            if (points.length === 1) {
-                updateStatus(`Good! Now tap the right eye (${points.length}/3)`);
-            } else if (points.length === 2) {
-                updateStatus(`Perfect! Now tap the mouth center (${points.length}/3)`);
-            } else if (points.length === 3) {
-                avatarCanvas.removeEventListener('click', clickHandler);
-                updateStatus('Manual landmarks set - limited morphing enabled');
-                resolve(points);
+            if (points.length < 3) {
+                updateInstruction(points.length);
+            } else {
+                updateInstruction(3);
+                cleanup();
+                setTimeout(() => resolve(points), 500); // Small delay to show success message
             }
         };
         
+        // Button event handlers
+        resetHandler = () => resetSelection();
+        cancelHandler = () => {
+            cleanup();
+            updateStatus('Manual selection cancelled');
+            resolve(null);
+        };
+        
+        // Set up event listeners
         avatarCanvas.addEventListener('click', clickHandler);
+        resetBtn.addEventListener('click', resetHandler);
+        cancelBtn.addEventListener('click', cancelHandler);
         avatarCanvas.style.cursor = 'crosshair';
         
-        // Timeout after 30 seconds
+        updateStatus('Manual selection active - click on the face features');
+        
+        // Auto-timeout after 60 seconds
         setTimeout(() => {
             if (points.length < 3) {
-                avatarCanvas.removeEventListener('click', clickHandler);
-                avatarCanvas.style.cursor = 'default';
-                updateStatus('Manual selection timed out - using basic animation');
+                cleanup();
+                updateStatus('Manual selection timed out');
                 resolve(null);
             }
-        }, 30000);
+        }, 60000);
     });
 }
 
@@ -490,7 +610,7 @@ async function initPreview() {
             ? 'Manual landmarks - limited morphing active'
             : morphingEnabled 
                 ? 'Full facial morphing active!'
-                : 'Basic animation active - no morphing available';
+                : 'Ready! Use manual selection or try uploading a clearer photo for auto-detection';
                 
         updateStatus(statusMsg);
         hideLoading();
