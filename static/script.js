@@ -443,8 +443,8 @@ function drawRegionDebugOutlines(regions) {
     debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
     
     const colors = {
-        lefteye: '#ff4444',
-        righteye: '#44ff44', 
+        leftEye: '#ff4444',
+        rightEye: '#44ff44', 
         mouth: '#4444ff'
     };
     

@@ -47,6 +47,9 @@ function selectFeatureRegions(canvas, debugCanvas, avatarImg) {
         debugCanvas.style.display = 'block';
         debugCanvas.style.pointerEvents = 'auto';
         
+        // Clear the debug canvas but keep it transparent so avatar shows through
+        selectionState.debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+        
         // Set up event listeners
         setupEventListeners();
         
@@ -134,8 +137,10 @@ function updateDrag(x, y) {
     const ctx = selectionState.debugCtx;
     const canvas = selectionState.debugCanvas;
     
-    // Clear canvas and redraw existing regions
+    // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw existing regions first
     drawExistingRegions();
     
     // Draw current selection rectangle
@@ -147,6 +152,13 @@ function updateDrag(x, y) {
     ctx.setLineDash([5, 5]);
     ctx.strokeRect(selectionState.startX, selectionState.startY, width, height);
     ctx.setLineDash([]);
+    
+    // Add instruction text for current region
+    ctx.fillStyle = regionColors[currentRegion];
+    ctx.font = 'bold 16px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Selecting: ${regionLabels[currentRegion]}`, canvas.width / 2, 30);
+    ctx.textAlign = 'left';
 }
 
 function onMouseUp(e) {
@@ -200,6 +212,7 @@ function endDrag(x, y) {
 function drawExistingRegions() {
     const ctx = selectionState.debugCtx;
     
+    // Draw all existing regions using their stored index colors
     for (let i = 0; i < currentRegion; i++) {
         const regionName = regionNames[i];
         const region = regions[regionName];
@@ -208,10 +221,10 @@ function drawExistingRegions() {
             ctx.lineWidth = 2;
             ctx.strokeRect(region.x, region.y, region.w, region.h);
             
-            // Add label
+            // Add label with region name
             ctx.fillStyle = regionColors[i];
             ctx.font = '14px Arial';
-            ctx.fillText(`${i + 1}`, region.x + 5, region.y + 20);
+            ctx.fillText(regionLabels[i], region.x + 5, region.y + 20);
         }
     }
 }
@@ -324,7 +337,7 @@ function cleanup() {
     isSelecting = false;
     removeEventListeners();
     
-    // Hide debug canvas
+    // Reset debug canvas to non-interactive but keep it visible for region display
     if (selectionState.debugCanvas) {
         selectionState.debugCanvas.style.pointerEvents = 'none';
     }
@@ -335,6 +348,8 @@ function cleanup() {
     
     const controls = document.getElementById('manualControls');
     if (controls) controls.remove();
+    
+    console.log('[manualRegions] Cleanup completed');
 }
 
 // Export the main function
