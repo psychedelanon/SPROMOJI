@@ -351,11 +351,23 @@ async function startManualSelection() {
             drawDebugPoints(avatarLandmarks.slice(0, 10));
             
             if (window.FacialMorph) {
-                avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
-                morphingEnabled = true;
-                console.log('[spromoji] ✅ Manual landmarks created successfully');
-                updateStatus('Manual landmarks set - limited morphing enabled');
-                return true;
+                try {
+                    avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
+                    morphingEnabled = true;
+                    console.log('[spromoji] ✅ Manual landmarks created successfully');
+                    console.log('[spromoji] Manual triangulation:', avatarTriangulation.triangles.length / 3, 'triangles');
+                    console.log('[spromoji] Morphing enabled:', morphingEnabled);
+                    updateStatus('Manual landmarks set - limited morphing enabled');
+                    return true;
+                } catch (error) {
+                    console.error('[spromoji] ❌ Manual triangulation failed:', error);
+                    updateStatus('Manual triangulation failed');
+                    return false;
+                }
+            } else {
+                console.error('[spromoji] ❌ FacialMorph not available for manual mode');
+                updateStatus('Morphing library not loaded');
+                return false;
             }
         } else {
             console.log('[spromoji] Manual selection cancelled or failed');
@@ -528,6 +540,17 @@ async function showManualPicker() {
 function createSyntheticLandmarks(points) {
     const [leftEye, rightEye, mouth] = points;
     
+    console.log('[spromoji] Creating synthetic landmarks from points:', {
+        leftEye: { x: leftEye.x.toFixed(1), y: leftEye.y.toFixed(1) },
+        rightEye: { x: rightEye.x.toFixed(1), y: rightEye.y.toFixed(1) },
+        mouth: { x: mouth.x.toFixed(1), y: mouth.y.toFixed(1) }
+    });
+    
+    // Ensure points have z coordinates
+    leftEye.z = leftEye.z || 0;
+    rightEye.z = rightEye.z || 0;
+    mouth.z = mouth.z || 0;
+    
     // Calculate face dimensions
     const eyeDistance = Math.sqrt(
         Math.pow(rightEye.x - leftEye.x, 2) + 
@@ -536,35 +559,86 @@ function createSyntheticLandmarks(points) {
     
     const faceCenter = {
         x: (leftEye.x + rightEye.x) / 2,
-        y: (leftEye.y + rightEye.y + mouth.y) / 3
+        y: (leftEye.y + rightEye.y + mouth.y) / 3,
+        z: 0
     };
+    
+    console.log('[spromoji] Face analysis:', {
+        eyeDistance: eyeDistance.toFixed(1),
+        faceCenter: { x: faceCenter.x.toFixed(1), y: faceCenter.y.toFixed(1) }
+    });
     
     // Generate basic landmark structure
     const landmarks = new Array(468);
     
-    // Key landmarks
+    // Critical MediaPipe Face Mesh landmark indices
     landmarks[1] = { x: faceCenter.x, y: faceCenter.y - eyeDistance * 0.3, z: 0 }; // nose tip
-    landmarks[33] = leftEye; // left eye
-    landmarks[263] = rightEye; // right eye  
-    landmarks[13] = { x: mouth.x, y: mouth.y - 5, z: 0 }; // upper lip
-    landmarks[14] = { x: mouth.x, y: mouth.y + 5, z: 0 }; // lower lip
+    landmarks[33] = { x: leftEye.x, y: leftEye.y, z: 0 }; // left eye outer corner
+    landmarks[263] = { x: rightEye.x, y: rightEye.y, z: 0 }; // right eye outer corner
+    landmarks[13] = { x: mouth.x, y: mouth.y - 8, z: 0 }; // upper lip center
+    landmarks[14] = { x: mouth.x, y: mouth.y + 8, z: 0 }; // lower lip center
     
-    // Fill remaining landmarks with interpolated positions
+    // Additional key landmarks for better morphing
+    landmarks[0] = { x: faceCenter.x, y: mouth.y + eyeDistance * 0.4, z: 0 }; // chin
+    landmarks[10] = { x: faceCenter.x, y: faceCenter.y - eyeDistance * 0.6, z: 0 }; // forehead
+    landmarks[151] = { x: faceCenter.x, y: faceCenter.y, z: 0 }; // nose bridge
+    landmarks[9] = { x: faceCenter.x, y: leftEye.y - eyeDistance * 0.2, z: 0 }; // between eyes
+    
+    // Eye region landmarks
+    for (let i = 154; i <= 158; i++) { // left eye region
+        const angle = ((i - 154) / 4) * Math.PI;
+        landmarks[i] = {
+            x: leftEye.x + Math.cos(angle) * (eyeDistance * 0.08),
+            y: leftEye.y + Math.sin(angle) * (eyeDistance * 0.05),
+            z: 0
+        };
+    }
+    
+    for (let i = 385; i <= 389; i++) { // right eye region
+        const angle = ((i - 385) / 4) * Math.PI;
+        landmarks[i] = {
+            x: rightEye.x + Math.cos(angle) * (eyeDistance * 0.08),
+            y: rightEye.y + Math.sin(angle) * (eyeDistance * 0.05),
+            z: 0
+        };
+    }
+    
+    // Mouth region landmarks
+    for (let i = 61; i <= 84; i++) { // mouth outline
+        const angle = ((i - 61) / 23) * 2 * Math.PI;
+        const radius = eyeDistance * 0.12;
+        landmarks[i] = {
+            x: mouth.x + Math.cos(angle) * radius,
+            y: mouth.y + Math.sin(angle) * radius * 0.6,
+            z: 0
+        };
+    }
+    
+    // Fill remaining landmarks with interpolated positions around face boundary
     for (let i = 0; i < 468; i++) {
         if (!landmarks[i]) {
-            // Simple interpolation based on key points
+            // Create a more realistic face outline
             const angle = (i / 468) * 2 * Math.PI;
-            const radius = eyeDistance * (0.3 + Math.random() * 0.4);
+            const radiusX = eyeDistance * (0.6 + Math.random() * 0.2);
+            const radiusY = eyeDistance * (0.7 + Math.random() * 0.2);
             
             landmarks[i] = {
-                x: faceCenter.x + Math.cos(angle) * radius,
-                y: faceCenter.y + Math.sin(angle) * radius * 0.8,
-                z: Math.random() * 0.02 - 0.01
+                x: faceCenter.x + Math.cos(angle) * radiusX,
+                y: faceCenter.y + Math.sin(angle) * radiusY,
+                z: (Math.random() - 0.5) * 0.01 // Small z variation
             };
         }
     }
     
-    console.log('[spromoji] ✅ Created synthetic landmarks from manual points');
+    console.log('[spromoji] ✅ Created', landmarks.length, 'synthetic landmarks');
+    console.log('[spromoji] Key landmarks check:', {
+        nose: landmarks[1] ? 'OK' : 'Missing',
+        leftEye: landmarks[33] ? 'OK' : 'Missing',
+        rightEye: landmarks[263] ? 'OK' : 'Missing',
+        upperLip: landmarks[13] ? 'OK' : 'Missing',
+        lowerLip: landmarks[14] ? 'OK' : 'Missing'
+    });
+    
     return landmarks;
 }
 
@@ -606,13 +680,18 @@ async function initPreview() {
         
         await camera.start();
         
-        const statusMsg = manualLandmarks 
-            ? 'Manual landmarks - limited morphing active'
-            : morphingEnabled 
-                ? 'Full facial morphing active!'
-                : 'Ready! Use manual selection or try uploading a clearer photo for auto-detection';
-                
-        updateStatus(statusMsg);
+        // Give camera a moment to initialize
+        setTimeout(() => {
+            const statusMsg = manualLandmarks 
+                ? 'Manual landmarks - limited morphing active'
+                : morphingEnabled 
+                    ? 'Full facial morphing active!'
+                    : 'Ready! Use manual selection or try uploading a clearer photo for auto-detection';
+                    
+            updateStatus(statusMsg);
+            console.log('[spromoji] ✅ System ready - morphing:', morphingEnabled, 'manual:', manualLandmarks);
+        }, 500);
+        
         hideLoading();
         
         console.log('[spromoji] ✅ Face tracking active');
@@ -651,6 +730,16 @@ function onLiveFaceResults(results) {
     if (morphingEnabled && avatarLandmarks && avatarTriangulation && window.FacialMorph) {
         morphAvatarFace(scaledUserLandmarks);
     } else {
+        // Debug why morphing isn't working
+        if (frameCount % 60 === 0) { // Log every 2 seconds
+            console.debug('[spromoji] Morphing check:', {
+                morphingEnabled,
+                hasAvatarLandmarks: !!avatarLandmarks,
+                hasTriangulation: !!avatarTriangulation,
+                hasFacialMorph: !!window.FacialMorph,
+                manualMode: manualLandmarks
+            });
+        }
         fallbackAnimation(scaledUserLandmarks);
     }
     
@@ -668,10 +757,14 @@ function onLiveFaceResults(results) {
  */
 function morphAvatarFace(userLandmarks) {
     try {
+        console.debug('[spromoji] Morphing frame - manual mode:', manualLandmarks);
+        
         // Get optimized triangle set for expressive regions
         const expressionTriangles = window.FacialMorph.getExpressionTriangles(
             avatarTriangulation.triangles
         );
+        
+        console.debug('[spromoji] Expression triangles:', expressionTriangles.length / 3);
         
         // Apply head rotation first
         const roll = computeHeadRoll(userLandmarks);
@@ -710,6 +803,8 @@ function morphAvatarFace(userLandmarks) {
  * @param {Array} userLandmarks - Live user facial landmarks
  */
 function fallbackAnimation(userLandmarks) {
+    if (!avatarImg) return;
+    
     const roll = computeHeadRoll(userLandmarks);
     const mouthOpen = computeMouthOpenness(userLandmarks);
     
@@ -724,7 +819,7 @@ function fallbackAnimation(userLandmarks) {
     
     // Rotate around center
     ctx.translate(centerX, centerY);
-    ctx.rotate(roll);
+    ctx.rotate(roll * 0.3); // Reduce rotation intensity
     
     // Draw avatar
     ctx.drawImage(avatarImg, -width/2, -height/2, width, height);
@@ -733,15 +828,20 @@ function fallbackAnimation(userLandmarks) {
     if (mouthOpen) {
         ctx.save();
         ctx.scale(1, 1.05);
-        ctx.globalAlpha = 0.6;
+        ctx.globalAlpha = 0.4;
         ctx.beginPath();
-        ctx.ellipse(0, height * 0.1, width * 0.2, height * 0.08, 0, 0, 2 * Math.PI);
+        ctx.ellipse(0, height * 0.1, width * 0.15, height * 0.06, 0, 0, 2 * Math.PI);
         ctx.clip();
-        ctx.drawImage(avatarImg, -width/2, -height/2 + 2, width, height);
+        ctx.drawImage(avatarImg, -width/2, -height/2 + 3, width, height);
         ctx.restore();
     }
     
     ctx.restore();
+    
+    // Debug log occasionally
+    if (frameCount % 120 === 0) {
+        console.debug('[spromoji] Fallback animation active - roll:', roll.toFixed(3), 'mouth:', mouthOpen);
+    }
 }
 
 /**
@@ -772,15 +872,26 @@ function computeMouthOpenness(landmarks) {
  */
 function startRecording() {
     if (isRecording || !avatarImg) {
-        console.log('[morph] Already recording or no avatar loaded');
+        console.log('[spromoji] Already recording or no avatar loaded');
         return;
     }
     
-    console.log('[morph] Starting recording...');
+    console.log('[spromoji] Starting recording...');
+    console.log('[spromoji] Recording state check:', {
+        morphingEnabled,
+        manualLandmarks,
+        hasAvatarLandmarks: !!avatarLandmarks,
+        hasTriangulation: !!avatarTriangulation
+    });
+    
     isRecording = true;
     startBtn.disabled = true;
     startBtn.textContent = '🎬 Recording... (5s)';
-    updateStatus('Recording facial morphing animation...');
+    
+    const recordingStatus = morphingEnabled 
+        ? `Recording ${manualLandmarks ? 'manual' : 'full'} morphing animation...`
+        : 'Recording basic animation...';
+    updateStatus(recordingStatus);
     
     // Create MediaRecorder from canvas stream
     const stream = avatarCanvas.captureStream(30);
@@ -797,8 +908,10 @@ function startRecording() {
     };
     
     recorder.onstop = () => {
-        console.log('[morph] Recording stopped');
+        console.log('[spromoji] Recording stopped');
+        console.log('[spromoji] Recorded chunks:', chunks.length);
         const blob = new Blob(chunks, { type: 'video/webm' });
+        console.log('[spromoji] Final blob size:', blob.size, 'bytes');
         
         // Create styled download link
         const url = URL.createObjectURL(blob);
@@ -842,7 +955,7 @@ function startRecording() {
         startBtn.textContent = '🎬 Start Recording';
         updateStatus(`Recording complete! ${morphingEnabled ? 'Morphing' : 'Basic'} animation saved.`);
         
-        console.log('[morph] Download link created, blob size:', blob.size, 'bytes');
+        console.log('[spromoji] Download link created, blob size:', blob.size, 'bytes');
     };
     
     recorder.start();
