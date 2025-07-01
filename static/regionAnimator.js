@@ -1,5 +1,5 @@
 (function () {
-  const BLINK_THRESHOLD = 0.2;   // EAR below this → eye closed
+  const BLINK_THRESHOLD = 0.17;  // EAR below this → eye closed
   const MOUTH_OPEN_THR  = 0.35;  // openness above this → mouth open (Pepe mouths often small)
   const DEBUG_MOUTH = false;
 
@@ -30,6 +30,15 @@
     const dy = lm[263].y - lm[33].y;
     const dx = lm[263].x - lm[33].x;
     return Math.atan2(dy, dx);
+  }
+
+  function computeYaw(lm) {
+    const left = lm[33];
+    const right = lm[263];
+    const nose = lm[1];
+    const cx = (left.x + right.x) / 2;
+    const w = right.x - left.x;
+    return (nose.x - cx) / w;
   }
 
   // Use outer-lip pair 12 / 15 (upper/lower) – gives bigger delta
@@ -83,14 +92,37 @@
     },
 
     /** draw one frame using stored animation state - optimized for smoothness */
-    animate(ctx) {
+    animate(ctx, landmarks = null) {
       if (!r) return;
+
+      // Use landmarks if provided (real-time mode), otherwise use stored animation state
+      let roll = 0, yaw = 0, earL = 1, earR = 1, mouthO = 0;
+      
+      if (landmarks && landmarks.length > 0) {
+        // Real-time MediaPipe mode
+        roll = computeRoll(landmarks);
+        yaw = computeYaw(landmarks);
+        earL = computeEAR(landmarks, 159, 145, 33, 133);
+        earR = computeEAR(landmarks, 386, 374, 362, 263);
+        mouthO = computeMouthOpenness(landmarks);
+        
+        if (DEBUG_MOUTH) console.debug('mouth ratio', mouthO.toFixed(2));
+      }
 
       // 1. base avatar with global tilt - smooth drawing
       ctx.save();
       ctx.clearRect(0, 0, r.canvasW, r.canvasH);
       ctx.translate(r.canvasW/2, r.canvasH/2);
-      ctx.rotate(animState.globalTilt * 0.3);    // use stored tilt
+      
+      if (landmarks) {
+        // Real-time mode: use computed values
+        ctx.rotate(roll * 0.3 + yaw * 0.2);
+        ctx.translate((Math.random()-0.5)*2, (Math.random()-0.5)*2);
+      } else {
+        // AI-driven mode: use stored animation state
+        ctx.rotate(animState.globalTilt * 0.3);
+      }
+      
       ctx.translate(-r.canvasW/2, -r.canvasH/2);
       ctx.drawImage(r.baseImg, 0, 0, r.canvasW, r.canvasH);
       ctx.restore();
@@ -106,21 +138,39 @@
       const le = r.regs.leftEye;
       ctx.translate(le.x + le.w/2, le.y + le.h/2);
       
-      // tiny parallax shift with tilt
-      ctx.translate(animState.globalTilt * 5, 0);
+      if (landmarks) {
+        // Real-time mode: use computed values
+        ctx.translate(roll * 5, 0);
+        const blinkL = earL < BLINK_THRESHOLD ? 0 : 1;
+        ctx.globalAlpha = blinkL;
+      } else {
+        // AI-driven mode: use stored animation state
+        ctx.translate(animState.globalTilt * 5, 0);
+        ctx.scale(1, animState.eyeScaleLeft);
+      }
       
-      // use stored eye scale
-      ctx.scale(1, animState.eyeScaleLeft);
       ctx.drawImage(r.leftEyeImg, -le.w/2, -le.h/2, le.w, le.h);
+      ctx.globalAlpha = 1;
       ctx.restore();
 
       /********* RIGHT EYE *********/
       ctx.save();
       const re = r.regs.rightEye;
       ctx.translate(re.x + re.w/2, re.y + re.h/2);
-      ctx.translate(animState.globalTilt * -5, 0);
-      ctx.scale(1, animState.eyeScaleRight);
+      
+      if (landmarks) {
+        // Real-time mode: use computed values
+        ctx.translate(roll * -5, 0);
+        const blinkR = earR < BLINK_THRESHOLD ? 0 : 1;
+        ctx.globalAlpha = blinkR;
+      } else {
+        // AI-driven mode: use stored animation state
+        ctx.translate(animState.globalTilt * -5, 0);
+        ctx.scale(1, animState.eyeScaleRight);
+      }
+      
       ctx.drawImage(r.rightEyeImg, -re.w/2, -re.h/2, re.w, re.h);
+      ctx.globalAlpha = 1;
       ctx.restore();
 
       /********* MOUTH *********/
@@ -128,10 +178,20 @@
       const mo = r.regs.mouth;
       ctx.translate(mo.x + mo.w/2, mo.y + mo.h/2);
       
-      // use stored mouth scale
-      const mouthOpenF = (animState.mouthScale - 1.0) / 0.3; // 0→1
-      ctx.translate(0, mouthOpenF * mo.h * 0.15);   // drop when open
-      ctx.scale(1, animState.mouthScale);           // scale up
+      if (landmarks) {
+        // Real-time mode: use mouth openness from landmarks
+        const mouthOpen = mouthO > MOUTH_OPEN_THR;
+        if (mouthOpen) {
+          ctx.translate(0, mo.h * 0.15);
+          ctx.scale(1, 1.3);
+        }
+      } else {
+        // AI-driven mode: use stored mouth scale
+        const mouthOpenF = (animState.mouthScale - 1.0) / 0.3; // 0→1
+        ctx.translate(0, mouthOpenF * mo.h * 0.15);   // drop when open
+        ctx.scale(1, animState.mouthScale);           // scale up
+      }
+      
       ctx.drawImage(r.mouthImg, -mo.w/2, -mo.h/2, mo.w, mo.h);
       ctx.restore();
     }

@@ -54,7 +54,7 @@ async function initializeApp() {
     // Event listeners with debugging
     if (avatarInput) {
         console.log('[spromoji] File input found, adding event listener');
-        avatarInput.addEventListener('change', handleFileUpload);
+        avatarInput.addEventListener('change', handleAvatarUpload);
     } else {
         console.error('[spromoji] Avatar input element not found!');
     }
@@ -70,11 +70,10 @@ async function initializeApp() {
         await loadAvatar(avatarParam);
     } else {
         updateStatus('Upload an avatar image to begin');
+        if (manualModeBtn) manualModeBtn.style.display = 'none';
         hideLoading();
     }
 }
-
-// Removed unused auto-detection stub
 
 /**
  * Load and process avatar image
@@ -155,7 +154,18 @@ async function loadAvatar(src) {
     }
 }
 
-// This function is now replaced by setupWebcamAndWorker()
+/**
+ * Handle file upload from input
+ */
+function handleAvatarUpload(event) {
+    const file = event.target.files[0];
+    if (file) {
+        const url = URL.createObjectURL(file);
+        updateStatus('Using uploaded image');
+        if (manualModeBtn) manualModeBtn.style.display = 'none';
+        loadAvatar(url);
+    }
+}
 
 function startRAFonce() {
     if (loopStarted) return;
@@ -183,59 +193,83 @@ function startRAFonce() {
         
         requestAnimationFrame(raf);
     }
+    
     raf();
 }
 
 /**
- * Setup webcam and face detection worker
+ * Setup webcam and worker
  */
 async function setupWebcamAndWorker() {
     try {
-        updateStatus('Starting camera...');
+        updateStatus('🎥 Setting up camera...');
         
-        // Get webcam stream
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'user', width: 640, height: 480 }
+        // Initialize webcam
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                facingMode: 'user'
+            } 
         });
-        cam.srcObject = stream;
-        await cam.play();
-        console.log('[spromoji] Camera started successfully');
         
-        // Initialize face detection worker
-        if (worker) {
-            worker.terminate();
+        if (!cam) cam = document.createElement('video');
+        cam.srcObject = stream;
+        cam.play();
+        
+        // Setup worker for face tracking
+        if (!worker) {
+            worker = new Worker('/static/faceWorker.js');
+            worker.onmessage = (e) => {
+                if (e.data.type === 'ready') {
+                    workerReady = true;
+                    console.log('[spromoji] Worker ready');
+                } else if (e.data.type === 'landmarks') {
+                    // Handle face landmarks from worker
+                    const landmarks = e.data.landmarks;
+                    if (landmarks && landmarks.length > 0) {
+                        // Update animation state based on landmarks
+                        updateAnimationFromLandmarks(landmarks);
+                    }
+                }
+            };
         }
         
-        worker = new Worker('/static/faceWorker.js', { type: 'module' });
-        worker.onmessage = ({ data }) => {
-            if (data.type === 'ready') {
-                console.log('[spromoji] Worker ready');
-                workerReady = true;
-                if (!loopStarted) {
-                    startRAFonce();
-                }
-            }
-            if (data.type === 'blend') {
-                // Update animation based on face landmarks
-                window.AIDriver.driveFromBlend(data.blend, data.lm);
-                if (!animationReady) {
-                    animationReady = true;
-                    console.log('[spromoji] Animation flowing');
-                    updateStatus('🎭 Animation active! Blink and talk to see your avatar move');
-                }
-            }
-        };
-        
-        worker.onerror = (error) => {
-            console.error('[spromoji] Worker error:', error);
-            updateStatus('Face detection failed - you can still use manual selection');
-        };
-        
-        updateStatus('🎯 Face tracking ready! Look at the camera...');
+        updateStatus('✅ Camera ready! Animation starting...');
+        startRAFonce();
         
     } catch (error) {
-        console.error('[spromoji] Camera/worker setup failed:', error);
-        updateStatus('Camera access failed. Please allow camera access or use manual selection.');
+        console.error('[spromoji] Camera setup failed:', error);
+        updateStatus('⚠️ Camera access denied. Animation will work without face tracking.');
+        startRAFonce(); // Start animation loop anyway
+    }
+}
+
+/**
+ * Update animation state from face landmarks
+ */
+function updateAnimationFromLandmarks(landmarks) {
+    if (!window.RegionAnimator || !landmarks || landmarks.length === 0) return;
+    
+    // Simple landmark-based animation updates
+    try {
+        // Calculate basic facial expressions
+        const leftEye = landmarks[159];
+        const rightEye = landmarks[386];
+        const mouth = landmarks[13];
+        
+        if (leftEye && rightEye && mouth) {
+            // Simple blink detection
+            const eyeOpenness = Math.abs(leftEye.y - landmarks[145].y);
+            window.RegionAnimator.setEyeScaleY(Math.max(0.3, eyeOpenness * 10));
+            window.RegionAnimator.setEyeScaleY(Math.max(0.3, eyeOpenness * 10), true);
+            
+            // Simple mouth opening
+            const mouthOpenness = Math.abs(mouth.y - landmarks[14].y);
+            window.RegionAnimator.setMouthScale(1 + mouthOpenness * 5);
+        }
+    } catch (error) {
+        console.warn('[spromoji] Landmark processing error:', error);
     }
 }
 
@@ -243,124 +277,73 @@ async function setupWebcamAndWorker() {
  * Start manual region selection
  */
 async function startManualSelection() {
-    if (!avatarImg) {
-        updateStatus('Please load an avatar first');
-        return;
-    }
+    updateStatus('👆 Click to select facial features manually');
+    if (manualModeBtn) manualModeBtn.style.display = 'none';
     
-    console.log('[spromoji] Starting manual selection');
-    updateStatus('🎯 Draw boxes around the left eye, right eye, and mouth');
-    
-    try {
-        // Use existing manual selection system
-        const selectedRegions = await window.ManualRegions.selectFeatureRegions(
-            avatarCanvas, debugCanvas, avatarImg
-        );
-        
-        if (selectedRegions) {
-            avatarRegions = selectedRegions;
-            window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
-            
-            updateStatus('✅ Manual regions set! Animation ready - look at the camera');
-            
-            // Ensure animation starts
-            if (!loopStarted) {
-                startRAFonce();
-            }
-        } else {
-            updateStatus('Manual selection cancelled');
-        }
-        
-    } catch (error) {
-        console.error('[spromoji] Manual selection failed:', error);
-        updateStatus('Manual selection failed - please try again');
-    }
+    // Simple manual selection implementation
+    // This would normally open a manual selection interface
+    console.log('[spromoji] Manual selection would be implemented here');
+    updateStatus('Manual selection not yet implemented');
 }
 
 /**
- * Main animation loop - robust and continuous
+ * Main animation loop
  */
 function mainLoop() {
-    if (!(workerReady && animationReady && avatarRegions)) {
-        requestAnimationFrame(mainLoop);
-        return;
-    }
+    if (!avatarRegions) return;
     
-    (async () => {
-        try {
-            // Send frame to worker for processing
-            const bitmap = await createImageBitmap(cam);
-            worker.postMessage({
-                type: 'frame',
-                bitmap,
-                ts: performance.now()
-            }, [bitmap]);
-            
-            // Animate (RegionAnimator handles clearing)
-            window.RegionAnimator.animate(ctx);
-            
-        } catch (error) {
-            console.error('[spromoji] Animation loop error:', error);
-        }
-        
-        requestAnimationFrame(mainLoop);
-    })();
+    frameCount++;
+    updateFPS();
+    
+    // Animate avatar
+    window.RegionAnimator.animate(ctx);
+    
+    requestAnimationFrame(mainLoop);
 }
-
-// RAF loop integrated into startRAFonce above
 
 /**
  * Update FPS counter
  */
 function updateFPS() {
-    frameCount++;
     const now = performance.now();
-    
     if (now - lastFpsTime >= 1000) {
-        console.log('[spromoji] FPS:', frameCount);
+        console.debug(`[spromoji] FPS: ${frameCount}`);
         frameCount = 0;
         lastFpsTime = now;
     }
 }
 
 /**
- * Stop animation loop and cleanup
+ * Stop animation and cleanup
  */
 function stopAnimation() {
-    console.log('[spromoji] Stopping animation...');
+    isRecording = false;
     animationReady = false;
+    loopStarted = false;
     
-    // Terminate existing worker
     if (worker) {
         worker.terminate();
         worker = null;
-        console.log('[spromoji] Worker terminated');
+        workerReady = false;
     }
     
-    // Stop webcam stream to force fresh restart
     if (cam && cam.srcObject) {
-        const tracks = cam.srcObject.getTracks();
-        tracks.forEach(track => track.stop());
+        cam.srcObject.getTracks().forEach(track => track.stop());
         cam.srcObject = null;
-        console.log('[spromoji] Webcam stream stopped');
     }
+    
+    console.log('[spromoji] Animation stopped and cleaned up');
 }
 
 /**
- * Reset all application state
+ * Reset application state
  */
 function resetState() {
-    console.log('[spromoji] Resetting state...');
-    
-    // Reset global state
+    avatarImg = null;
     avatarRegions = null;
-    isRecording = false;
+    animationReady = false;
     frameCount = 0;
-    lastFpsTime = 0;
-    workerReady = false;
-    loopStarted = false;
     
-    // Clear initialization timeout
     if (initializationTimeout) {
         clearTimeout(initializationTimeout);
         initializationTimeout = null;
@@ -428,8 +411,6 @@ function startRecording() {
         console.log('[spromoji] Recording complete');
     }, 5000);
 }
-
-// Theme selector removed - using fixed blue/yellow/red color scheme
 
 /**
  * Handle file upload

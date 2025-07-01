@@ -29,6 +29,7 @@ loop_thread = None
 
 # File cache for avatar proxy - maps file_unique_id to file_path
 file_cache = {}
+user_photo_cache = {}
 
 
 def run_async(coro):
@@ -117,7 +118,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             
             print(f"Profile photo found for user {user_id}: {file.file_unique_id}")
             
-            # Cache the file path for the proxy route - always update to latest
+            # Clean up old cache entry if user has changed their photo
+            prev_uid = user_photo_cache.get(user_id)
+            if prev_uid and prev_uid != file.file_unique_id:
+                file_cache.pop(prev_uid, None)
+
+            # Cache the file path for the proxy route and track user's current photo
+            user_photo_cache[user_id] = file.file_unique_id
             file_cache[file.file_unique_id] = file.file_path
             
             # Use our proxy URL with cache-buster timestamp to ensure fresh image
