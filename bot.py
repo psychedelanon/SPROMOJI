@@ -29,6 +29,7 @@ loop_thread = None
 
 # File cache for avatar proxy - maps file_unique_id to file_path
 file_cache = {}
+user_photo_cache = {}
 
 
 def run_async(coro):
@@ -101,16 +102,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Get the most recent profile photo (limit=1 gets the newest)
         photos = await context.bot.get_user_profile_photos(update.effective_user.id, limit=1, offset=0)
         if photos.total_count:
-            # Get the highest resolution version of the most recent photo
-            file_id = photos.photos[0][-1].file_id  # -1 gets highest resolution
+            file_id = photos.photos[0][-1].file_id
             file = await context.bot.get_file(file_id)
-            
-            print(f"Debug - file.file_path: {file.file_path}")
-            print(f"Debug - file.file_unique_id: {file.file_unique_id}")
-            
-            # Cache the file path for the proxy route
+
+            prev_uid = user_photo_cache.get(update.effective_user.id)
+            if prev_uid and prev_uid != file.file_unique_id:
+                file_cache.pop(prev_uid, None)
+
+            user_photo_cache[update.effective_user.id] = file.file_unique_id
             file_cache[file.file_unique_id] = file.file_path
-            print(f"Debug - Cached file path for {file.file_unique_id}")
             
             # Use our proxy URL with cache-buster timestamp
             import time
