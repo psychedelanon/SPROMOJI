@@ -1,167 +1,10 @@
 /**
- * SPROMOJI Facial Morphing - Triangulation and Warping Helpers
- * Implements Delaunay triangulation and per-triangle affine transforms for real-time face morphing
+ * Region-Based Animation System
+ * Simple affine transforms on facial feature regions for pose-driven animation
  */
 
-console.log('[warp] Facial morphing helpers loading...');
-
 /**
- * Create Delaunay triangulation from facial landmarks
- * @param {Array} landmarks - Array of {x, y} points
- * @returns {Object} {triangles: Uint32Array, coords: Float32Array}
- */
-function triangulatePoints(landmarks) {
-    console.log('[warp] Triangulating', landmarks.length, 'landmarks');
-    
-    // Convert landmarks to flat coordinate array for Delaunator
-    const coords = new Float32Array(landmarks.length * 2);
-    for (let i = 0; i < landmarks.length; i++) {
-        coords[i * 2] = landmarks[i].x;
-        coords[i * 2 + 1] = landmarks[i].y;
-    }
-    
-    // Perform Delaunay triangulation
-    const delaunay = Delaunator.from(landmarks.map(p => [p.x, p.y]));
-    
-    console.log('[warp] Created', delaunay.triangles.length / 3, 'triangles');
-    
-    return {
-        triangles: delaunay.triangles, // Indices into landmarks array
-        coords: coords
-    };
-}
-
-/**
- * Get triangles that include specific landmark indices (for performance optimization)
- * @param {Uint32Array} triangles - Triangle indices from Delaunator
- * @param {Array} landmarkIndices - Landmark indices to filter by
- * @returns {Array} Filtered triangle indices
- */
-function getTrianglesContaining(triangles, landmarkIndices) {
-    const indexSet = new Set(landmarkIndices);
-    const filteredTriangles = [];
-    
-    for (let i = 0; i < triangles.length; i += 3) {
-        const t0 = triangles[i];
-        const t1 = triangles[i + 1];
-        const t2 = triangles[i + 2];
-        
-        // If any vertex of the triangle is in our target indices
-        if (indexSet.has(t0) || indexSet.has(t1) || indexSet.has(t2)) {
-            filteredTriangles.push(t0, t1, t2);
-        }
-    }
-    
-    return filteredTriangles;
-}
-
-/**
- * Warp a single triangle using affine transformation
- * @param {CanvasRenderingContext2D} srcCtx - Source canvas context
- * @param {CanvasRenderingContext2D} dstCtx - Destination canvas context
- * @param {Array} srcTriangle - Source triangle vertices [{x,y}, {x,y}, {x,y}]
- * @param {Array} dstTriangle - Destination triangle vertices [{x,y}, {x,y}, {x,y}]
- */
-function warpTriangle(srcCtx, dstCtx, srcTriangle, dstTriangle) {
-    const [src0, src1, src2] = srcTriangle;
-    const [dst0, dst1, dst2] = dstTriangle;
-    
-    // Calculate affine transformation matrix
-    // From src triangle to dst triangle
-    const matrix = calculateAffineMatrix(src0, src1, src2, dst0, dst1, dst2);
-    
-    if (!matrix) return; // Skip degenerate triangles
-    
-    dstCtx.save();
-    
-    // Create clipping path for destination triangle
-    dstCtx.beginPath();
-    dstCtx.moveTo(dst0.x, dst0.y);
-    dstCtx.lineTo(dst1.x, dst1.y);
-    dstCtx.lineTo(dst2.x, dst2.y);
-    dstCtx.closePath();
-    dstCtx.clip();
-    
-    // Apply transformation matrix
-    dstCtx.setTransform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
-    
-    // Draw source triangle area
-    dstCtx.drawImage(srcCtx.canvas, 0, 0);
-    
-    dstCtx.restore();
-}
-
-/**
- * Calculate 2D affine transformation matrix to map src triangle to dst triangle
- * @param {Object} src0, src1, src2 - Source triangle vertices
- * @param {Object} dst0, dst1, dst2 - Destination triangle vertices
- * @returns {Object} Transformation matrix {a, b, c, d, e, f}
- */
-function calculateAffineMatrix(src0, src1, src2, dst0, dst1, dst2) {
-    // Set up system of linear equations for affine transform
-    // [a c e] [x]   [x']
-    // [b d f] [y] = [y']
-    // [0 0 1] [1]   [1 ]
-    
-    const x1 = src0.x, y1 = src0.y;
-    const x2 = src1.x, y2 = src1.y;
-    const x3 = src2.x, y3 = src2.y;
-    
-    const u1 = dst0.x, v1 = dst0.y;
-    const u2 = dst1.x, v2 = dst1.y;
-    const u3 = dst2.x, v3 = dst2.y;
-    
-    // Calculate determinant to avoid division by zero
-    const det = (x1 - x3) * (y2 - y3) - (x2 - x3) * (y1 - y3);
-    if (Math.abs(det) < 1e-10) return null; // Degenerate triangle
-    
-    // Solve for transformation matrix coefficients
-    const a = ((u1 - u3) * (y2 - y3) - (u2 - u3) * (y1 - y3)) / det;
-    const b = ((v1 - v3) * (y2 - y3) - (v2 - v3) * (y1 - y3)) / det;
-    const c = ((x1 - x3) * (u2 - u3) - (x2 - x3) * (u1 - u3)) / det;
-    const d = ((x1 - x3) * (v2 - v3) - (x2 - x3) * (v1 - v3)) / det;
-    const e = u3 - a * x3 - c * y3;
-    const f = v3 - b * x3 - d * y3;
-    
-    return { a, b, c, d, e, f };
-}
-
-/**
- * Morph entire face using triangulation
- * @param {CanvasRenderingContext2D} srcCtx - Source avatar context
- * @param {CanvasRenderingContext2D} dstCtx - Destination context
- * @param {Array} srcLandmarks - Source facial landmarks
- * @param {Array} dstLandmarks - Target facial landmarks
- * @param {Uint32Array} triangles - Triangle indices
- */
-function morphFace(srcCtx, dstCtx, srcLandmarks, dstLandmarks, triangles) {
-    // Clear destination
-    dstCtx.clearRect(0, 0, dstCtx.canvas.width, dstCtx.canvas.height);
-    
-    // Process triangles in batches for performance
-    for (let i = 0; i < triangles.length; i += 3) {
-        const idx0 = triangles[i];
-        const idx1 = triangles[i + 1];
-        const idx2 = triangles[i + 2];
-        
-        const srcTriangle = [
-            srcLandmarks[idx0],
-            srcLandmarks[idx1], 
-            srcLandmarks[idx2]
-        ];
-        
-        const dstTriangle = [
-            dstLandmarks[idx0],
-            dstLandmarks[idx1],
-            dstLandmarks[idx2]
-        ];
-        
-        warpTriangle(srcCtx, dstCtx, srcTriangle, dstTriangle);
-    }
-}
-
-/**
- * Get facial region landmark indices for optimization
+ * Get facial region landmark indices for feature detection
  */
 const FACIAL_REGIONS = {
     // MediaPipe Face Mesh landmark indices for key facial regions
@@ -179,96 +22,307 @@ const FACIAL_REGIONS = {
     
     RIGHT_EYE: [
         362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398
-    ],
-    
-    LEFT_EYEBROW: [
-        46, 53, 52, 51, 48, 115, 131, 134, 102, 49, 220, 305, 292, 334, 293, 300
-    ],
-    
-    RIGHT_EYEBROW: [
-        276, 283, 282, 295, 285, 336, 296, 334, 293, 300, 276, 353, 383, 372, 345, 346
     ]
 };
 
-// Performance monitoring
-let lastMorphTime = 0;
-let morphCount = 0;
-
 /**
- * Get performance-optimized triangle set focusing on expressive regions
- * @param {Uint32Array} allTriangles - All triangulation triangles
- * @returns {Uint32Array} Filtered triangles for mouth and eye regions
+ * Extract feature region bounding rectangles from landmarks
+ * @param {Array} landmarks - Array of {x, y, z} landmarks
+ * @returns {Object} Object with leftEye, rightEye, mouth region rectangles
  */
-function getExpressionTriangles(allTriangles) {
-    const expressiveIndices = [
-        ...FACIAL_REGIONS.MOUTH,
-        ...FACIAL_REGIONS.LEFT_EYE,
-        ...FACIAL_REGIONS.RIGHT_EYE,
-        ...FACIAL_REGIONS.LEFT_EYEBROW,
-        ...FACIAL_REGIONS.RIGHT_EYEBROW
-    ];
+function getFeatureRegionRects(landmarks) {
+    if (!landmarks || landmarks.length < 468) {
+        console.warn('[regions] Insufficient landmarks for region detection');
+        return null;
+    }
     
-    return getTrianglesContaining(allTriangles, expressiveIndices);
+    const regions = {};
+    
+    // Extract each region
+    for (const [regionName, indices] of Object.entries(FACIAL_REGIONS)) {
+        const regionPoints = indices.map(i => landmarks[i]).filter(p => p);
+        
+        if (regionPoints.length === 0) {
+            console.warn(`[regions] No valid points for ${regionName}`);
+            continue;
+        }
+        
+        // Calculate bounding box
+        const xs = regionPoints.map(p => p.x);
+        const ys = regionPoints.map(p => p.y);
+        
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        
+        regions[regionName.toLowerCase()] = {
+            x: minX,
+            y: minY,
+            w: maxX - minX,
+            h: maxY - minY,
+            centerX: (minX + maxX) / 2,
+            centerY: (minY + maxY) / 2
+        };
+    }
+    
+    console.log('[regions] Extracted regions:', Object.keys(regions));
+    return regions;
 }
 
 /**
- * Log morphing performance metrics
+ * Draw a region with affine transform
+ * @param {CanvasRenderingContext2D} srcCtx - Source image context
+ * @param {CanvasRenderingContext2D} dstCtx - Destination context
+ * @param {Object} region - Region bounds {x, y, w, h, centerX, centerY}
+ * @param {Object} transform - Transform options {translateX, translateY, scaleX, scaleY, rotation}
  */
-function logMorphPerformance() {
-    morphCount++;
-    const now = performance.now();
+function drawRegionTransformed(srcCtx, dstCtx, region, transform = {}) {
+    const {
+        translateX = 0,
+        translateY = 0,
+        scaleX = 1,
+        scaleY = 1,
+        rotation = 0
+    } = transform;
     
-    if (morphCount % 30 === 0) { // Log every 30 frames
-        const fps = morphCount / ((now - lastMorphTime) / 1000);
-        console.log(`[warp] Morphing FPS: ${fps.toFixed(1)}`);
-        morphCount = 0;
-        lastMorphTime = now;
+    dstCtx.save();
+    
+    // Move to target position
+    const targetX = region.centerX + translateX;
+    const targetY = region.centerY + translateY;
+    
+    dstCtx.translate(targetX, targetY);
+    
+    if (rotation !== 0) {
+        dstCtx.rotate(rotation);
+    }
+    
+    if (scaleX !== 1 || scaleY !== 1) {
+        dstCtx.scale(scaleX, scaleY);
+    }
+    
+    // Draw region centered at origin
+    dstCtx.drawImage(
+        srcCtx.canvas,
+        region.x, region.y, region.w, region.h,
+        -region.w / 2, -region.h / 2, region.w, region.h
+    );
+    
+    dstCtx.restore();
+}
+
+/**
+ * Compute Eye Aspect Ratio for blink detection
+ * @param {Array} landmarks - Facial landmarks
+ * @param {string} eye - 'left' or 'right'
+ * @returns {number} Eye aspect ratio (0 = closed, 1 = open)
+ */
+function computeEyeAspectRatio(landmarks, eye) {
+    if (!landmarks || landmarks.length < 468) return 1;
+    
+    let topPoints, bottomPoints, sidePoints;
+    
+    if (eye === 'left') {
+        topPoints = [159, 158, 157]; // Left eye top
+        bottomPoints = [145, 144, 163]; // Left eye bottom
+        sidePoints = [33, 133]; // Left eye corners
+    } else {
+        topPoints = [386, 385, 384]; // Right eye top
+        bottomPoints = [374, 373, 380]; // Right eye bottom
+        sidePoints = [362, 263]; // Right eye corners
+    }
+    
+    // Calculate vertical distances
+    let verticalDist = 0;
+    for (let i = 0; i < topPoints.length; i++) {
+        const top = landmarks[topPoints[i]];
+        const bottom = landmarks[bottomPoints[i]];
+        if (top && bottom) {
+            verticalDist += Math.abs(top.y - bottom.y);
+        }
+    }
+    verticalDist /= topPoints.length;
+    
+    // Calculate horizontal distance
+    const left = landmarks[sidePoints[0]];
+    const right = landmarks[sidePoints[1]];
+    const horizontalDist = left && right ? Math.abs(right.x - left.x) : 1;
+    
+    // Eye aspect ratio
+    const ear = verticalDist / horizontalDist;
+    
+    // Normalize and threshold
+    return ear > 0.15 ? 1 : 0; // Binary open/closed
+}
+
+/**
+ * Compute mouth scale based on openness
+ * @param {Array} landmarks - Facial landmarks
+ * @returns {Object} {scaleX, scaleY, translateY}
+ */
+function computeMouthTransform(landmarks) {
+    if (!landmarks || landmarks.length < 468) {
+        return { scaleX: 1, scaleY: 1, translateY: 0 };
+    }
+    
+    // Mouth landmarks
+    const upperLip = landmarks[13];   // Upper lip center
+    const lowerLip = landmarks[14];   // Lower lip center
+    const leftCorner = landmarks[61]; // Left mouth corner
+    const rightCorner = landmarks[291]; // Right mouth corner
+    
+    if (!upperLip || !lowerLip || !leftCorner || !rightCorner) {
+        return { scaleX: 1, scaleY: 1, translateY: 0 };
+    }
+    
+    // Calculate mouth dimensions
+    const mouthHeight = Math.abs(lowerLip.y - upperLip.y);
+    const mouthWidth = Math.abs(rightCorner.x - leftCorner.x);
+    
+    // Determine openness
+    const openRatio = mouthHeight / mouthWidth;
+    const isOpen = openRatio > 0.05;
+    
+    if (isOpen) {
+        return {
+            scaleX: 1.0,
+            scaleY: 1.2, // Stretch vertically when open
+            translateY: 2 // Move down slightly to simulate jaw drop
+        };
+    } else {
+        return {
+            scaleX: 1.0,
+            scaleY: 1.0,
+            translateY: 0
+        };
     }
 }
 
-// Export functions to global scope for script.js
-window.FacialMorph = {
-    triangulatePoints,
-    getTrianglesContaining,
-    warpTriangle,
-    morphFace,
-    getExpressionTriangles,
-    logMorphPerformance,
+/**
+ * Compute head yaw (left/right turn) approximation
+ * @param {Array} landmarks - Facial landmarks
+ * @returns {number} Yaw offset in pixels
+ */
+function computeHeadYaw(landmarks) {
+    if (!landmarks || landmarks.length < 468) return 0;
+    
+    const leftEye = landmarks[33];
+    const rightEye = landmarks[263];
+    const noseTip = landmarks[1];
+    
+    if (!leftEye || !rightEye || !noseTip) return 0;
+    
+    // Calculate face center
+    const faceCenterX = (leftEye.x + rightEye.x) / 2;
+    
+    // Distance from nose to face center indicates turn
+    const yawOffset = (noseTip.x - faceCenterX) * 0.5; // Scale down
+    
+    return yawOffset;
+}
+
+/**
+ * Main region-based animation function
+ * @param {CanvasRenderingContext2D} srcCtx - Source avatar context
+ * @param {CanvasRenderingContext2D} dstCtx - Destination canvas context
+ * @param {Object} avatarRegions - Avatar feature regions
+ * @param {Array} userLandmarks - Live user landmarks
+ * @param {HTMLImageElement} avatarImg - Avatar image
+ */
+function animateFeatureRegions(srcCtx, dstCtx, avatarRegions, userLandmarks, avatarImg) {
+    if (!avatarRegions || !userLandmarks || !avatarImg) {
+        console.warn('[regions] Missing required data for animation');
+        return;
+    }
+    
+    // Clear canvas
+    dstCtx.clearRect(0, 0, dstCtx.canvas.width, dstCtx.canvas.height);
+    
+    // Compute user pose data
+    const headRoll = computeHeadRoll(userLandmarks);
+    const headYaw = computeHeadYaw(userLandmarks);
+    const leftEyeEAR = computeEyeAspectRatio(userLandmarks, 'left');
+    const rightEyeEAR = computeEyeAspectRatio(userLandmarks, 'right');
+    const mouthTransform = computeMouthTransform(userLandmarks);
+    
+    // Apply global head tilt
+    dstCtx.save();
+    dstCtx.translate(dstCtx.canvas.width / 2, dstCtx.canvas.height / 2);
+    dstCtx.rotate(headRoll * 0.3); // Gentle head tilt
+    dstCtx.translate(-dstCtx.canvas.width / 2, -dstCtx.canvas.height / 2);
+    
+    // Draw base avatar (we'll overwrite feature regions)
+    dstCtx.drawImage(avatarImg, 0, 0, dstCtx.canvas.width, dstCtx.canvas.height);
+    
+    // Animate left eye
+    if (avatarRegions.lefteye) {
+        const eyeTransform = {
+            translateX: headYaw * 0.5,
+            translateY: 0,
+            scaleX: 1,
+            scaleY: leftEyeEAR, // Blink by scaling vertically
+            rotation: 0
+        };
+        
+        drawRegionTransformed(srcCtx, dstCtx, avatarRegions.lefteye, eyeTransform);
+    }
+    
+    // Animate right eye
+    if (avatarRegions.righteye) {
+        const eyeTransform = {
+            translateX: headYaw * 0.5,
+            translateY: 0,
+            scaleX: 1,
+            scaleY: rightEyeEAR, // Blink by scaling vertically
+            rotation: 0
+        };
+        
+        drawRegionTransformed(srcCtx, dstCtx, avatarRegions.righteye, eyeTransform);
+    }
+    
+    // Animate mouth
+    if (avatarRegions.mouth) {
+        const finalMouthTransform = {
+            translateX: headYaw * 0.3,
+            translateY: mouthTransform.translateY,
+            scaleX: mouthTransform.scaleX,
+            scaleY: mouthTransform.scaleY,
+            rotation: 0
+        };
+        
+        drawRegionTransformed(srcCtx, dstCtx, avatarRegions.mouth, finalMouthTransform);
+    }
+    
+    dstCtx.restore();
+}
+
+/**
+ * Helper function to compute head roll from eye positions
+ * @param {Array} landmarks - Facial landmarks
+ * @returns {number} Roll angle in radians
+ */
+function computeHeadRoll(landmarks) {
+    if (!landmarks || landmarks.length < 468) return 0;
+    
+    const leftEye = landmarks[33];   // Left eye outer corner
+    const rightEye = landmarks[263]; // Right eye outer corner
+    
+    if (!leftEye || !rightEye) return 0;
+    
+    return Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
+}
+
+// Export functions to global scope
+window.RegionAnimator = {
+    getFeatureRegionRects,
+    drawRegionTransformed,
+    computeEyeAspectRatio,
+    computeMouthTransform,
+    computeHeadYaw,
+    computeHeadRoll,
+    animateFeatureRegions,
     FACIAL_REGIONS
 };
 
-console.log('[warp] Facial morphing helpers loaded successfully');
-
-/* TODO: Phase P2 - WebGL Implementation
- * 
- * For mobile performance and advanced effects, implement WebGL-based morphing:
- * 
- * 1. WebGL Vertex Shader:
- *    - Upload landmarks as vertex attributes
- *    - Apply morphing in vertex shader for GPU acceleration
- *    - Use texture coordinates for proper mapping
- * 
- * 2. Fragment Shader:
- *    - Handle texture sampling and blending
- *    - Add real-time lighting effects
- *    - Implement smooth interpolation between keyframes
- * 
- * 3. WebGL Optimizations:
- *    - Use vertex buffer objects (VBOs) for landmark data
- *    - Implement level-of-detail (LOD) for distant faces
- *    - Add frustum culling for off-screen triangles
- *    - Use instanced rendering for multiple avatars
- * 
- * 4. Advanced Features:
- *    - Subsurface scattering for realistic skin
- *    - Dynamic normal mapping for facial texture
- *    - Real-time shadow casting
- *    - Hair and clothing physics
- * 
- * Implementation files needed:
- *    - static/shaders/morph.vert
- *    - static/shaders/morph.frag  
- *    - static/webgl-morph.js
- * 
- * Expected performance: 60 FPS on mobile devices
- */ 
+console.log('[regions] Region-based animation system loaded successfully'); 

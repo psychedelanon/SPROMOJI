@@ -5,20 +5,21 @@
 console.log('[morph] SPROMOJI Facial Morphing starting...');
 
 // DOM elements (initialized in initializeApp)
-let cam, avatarCanvas, debugCanvas, ctx, debugCtx;
+let cam, avatarCanvas, debugCanvas, debugOverlay, ctx, debugCtx, debugOverlayCtx;
 let avatarInput, startBtn, loadingIndicator, statusText, manualModeBtn;
 
 // Global state
 let avatarImg = null;
-let avatarLandmarks = null;    // P0: Cached avatar facial landmarks
-let avatarTriangulation = null; // P0: Cached triangulation data
+let avatarLandmarks = null;    // P0: Cached avatar facial landmarks (for auto-detection)
+let avatarRegions = null;      // P1: Feature regions for animation
 let avatarMesh = null;  // Dedicated to static avatar analysis
 let liveMesh = null;    // Dedicated to webcam streaming
 let camera = null;
 let isRecording = false;
 let previewRunning = false;
-let morphingEnabled = false;   // P1: Fallback flag
+let animationEnabled = false;   // P1: Region-based animation flag
 let manualLandmarks = false;
+let debugMode = false;         // Debug overlay mode
 
 // Performance monitoring
 let lastFrameTime = 0;
@@ -41,9 +42,15 @@ if (tg && tg.expand) tg.expand();
 async function initializeApp() {
     console.log('[spromoji] DOM ready, initializing...');
     
+    // Check for debug mode
+    const debugParams = new URLSearchParams(window.location.search);
+    debugMode = debugParams.has('debug');
+    console.log('[spromoji] Debug mode:', debugMode);
+    
     // Get DOM elements
     avatarCanvas = document.getElementById('avatarCanvas');
     debugCanvas = document.getElementById('debugCanvas');
+    debugOverlay = document.getElementById('debugOverlay');
     cam = document.getElementById('cam');
     startBtn = document.getElementById('startBtn');
     avatarInput = document.getElementById('avatarInput');
@@ -59,6 +66,14 @@ async function initializeApp() {
     // Initialize contexts
     ctx = avatarCanvas.getContext('2d');
     debugCtx = debugCanvas.getContext('2d');
+    
+    if (debugOverlay) {
+        debugOverlayCtx = debugOverlay.getContext('2d');
+        if (debugMode) {
+            debugOverlay.style.display = 'block';
+            console.log('[spromoji] Debug overlay enabled');
+        }
+    }
     
     // Create off-screen canvas for avatar processing
     avatarSrcCanvas = document.createElement('canvas');
@@ -126,6 +141,11 @@ async function loadAvatar(src) {
             debugCanvas.height = avatarCanvas.height;
         }
         
+        if (debugOverlay) {
+            debugOverlay.width = avatarCanvas.width;
+            debugOverlay.height = avatarCanvas.height;
+        }
+        
         // Set up source canvas
         avatarSrcCanvas.width = avatarCanvas.width;
         avatarSrcCanvas.height = avatarCanvas.height;
@@ -179,38 +199,48 @@ function handleFileUpload(event) {
  * Initialize MediaPipe face mesh instances
  */
 async function initializeMediaPipe() {
-    console.log('[spromoji] Initializing MediaPipe...');
-    updateStatus('Loading facial recognition...');
+    updateStatus('🔧 Debug: Initializing MediaPipe...');
     
-    await waitForMediaPipe();
-    
-    // Create separate FaceMesh for avatar analysis
-    avatarMesh = new FaceMesh({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
-    });
-    
-    avatarMesh.setOptions({
-        maxNumFaces: 1,
-        refineLandmarks: true,
-        minDetectionConfidence: 0.7,
-        minTrackingConfidence: 0.5
-    });
-    
-    // Create separate FaceMesh for live webcam
-    liveMesh = new FaceMesh({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
-    });
-    
-    liveMesh.setOptions({
-        maxNumFaces: 1,
-        refineLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
-    });
-    
-    liveMesh.onResults(onLiveFaceResults);
-    
-    console.log('[spromoji] ✅ MediaPipe instances created');
+    try {
+        updateStatus('🔧 Debug: Waiting for MediaPipe to load...');
+        await waitForMediaPipe();
+        
+        updateStatus('🔧 Debug: Creating avatar FaceMesh instance...');
+        
+        // Create separate FaceMesh for avatar analysis
+        avatarMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+        
+        avatarMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.5
+        });
+        
+        updateStatus('🔧 Debug: Creating live FaceMesh instance...');
+        
+        // Create separate FaceMesh for live webcam
+        liveMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+        
+        liveMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        liveMesh.onResults(onLiveFaceResults);
+        
+        updateStatus('✅ Debug: MediaPipe instances created successfully');
+        
+    } catch (error) {
+        updateStatus('❌ Debug: MediaPipe initialization failed - ' + error.message);
+        throw error;
+    }
 }
 
 /**
@@ -235,16 +265,19 @@ async function tryAutoDetection() {
                 avatarLandmarks = landmarks;
                 drawDebugPoints(landmarks);
                 
-                // Create triangulation
-                if (window.FacialMorph && window.Delaunator) {
+                // Extract feature regions from landmarks
+                if (window.RegionAnimator) {
                     try {
-                        avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
-                        morphingEnabled = true;
-                        manualLandmarks = false;
-                        console.log('[spromoji] ✅ Triangulation created:', avatarTriangulation.triangles.length / 3, 'triangles');
-                        return true;
-                    } catch (triangulationError) {
-                        console.error('[spromoji] ❌ Triangulation failed:', triangulationError);
+                        avatarRegions = window.RegionAnimator.getFeatureRegionRects(avatarLandmarks);
+                        if (avatarRegions && Object.keys(avatarRegions).length > 0) {
+                            animationEnabled = true;
+                            manualLandmarks = false;
+                            console.log('[spromoji] ✅ Feature regions extracted:', Object.keys(avatarRegions));
+                            updateStatus('✅ Auto-detected features - ready to animate!');
+                            return true;
+                        }
+                    } catch (regionError) {
+                        console.error('[spromoji] ❌ Region extraction failed:', regionError);
                     }
                 }
             }
@@ -254,12 +287,14 @@ async function tryAutoDetection() {
         
         // All automatic detection failed
         console.warn('[spromoji] ❌ Automatic detection failed');
-        morphingEnabled = false;
+        animationEnabled = false;
+        updateStatus('❌ Auto-detection failed - please select features manually');
         return false;
         
     } catch (error) {
         console.error('[spromoji] Avatar analysis error:', error);
-        morphingEnabled = false;
+        animationEnabled = false;
+        updateStatus('❌ Detection error - please select features manually');
         return false;
     }
 }
@@ -331,52 +366,39 @@ async function startManualSelection() {
         return;
     }
     
-    console.log('[spromoji] Starting manual landmark selection');
-    updateStatus('Starting manual selection...');
+    console.log('[spromoji] Starting manual region selection');
+    updateStatus('🎯 Manual region selection mode activated');
     
-    // Clear any existing landmarks
+    // Clear any existing data
     avatarLandmarks = null;
-    avatarTriangulation = null;
-    morphingEnabled = false;
+    avatarRegions = null;
+    animationEnabled = false;
     debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
     
     try {
-        const manualPoints = await showManualPicker();
+        // Use new region selection system
+        const regions = await window.ManualRegions.selectFeatureRegions(avatarCanvas, debugCanvas, avatarImg);
         
-        if (manualPoints && manualPoints.length === 3) {
-            avatarLandmarks = createSyntheticLandmarks(manualPoints);
-            manualLandmarks = true;
-            
-            // Draw key landmarks for visual feedback
-            drawDebugPoints(avatarLandmarks.slice(0, 10));
-            
-            if (window.FacialMorph) {
-                try {
-                    avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
-                    morphingEnabled = true;
-                    console.log('[spromoji] ✅ Manual landmarks created successfully');
-                    console.log('[spromoji] Manual triangulation:', avatarTriangulation.triangles.length / 3, 'triangles');
-                    console.log('[spromoji] Morphing enabled:', morphingEnabled);
-                    updateStatus('Manual landmarks set - limited morphing enabled');
-                    return true;
-                } catch (error) {
-                    console.error('[spromoji] ❌ Manual triangulation failed:', error);
-                    updateStatus('Manual triangulation failed');
-                    return false;
-                }
-            } else {
-                console.error('[spromoji] ❌ FacialMorph not available for manual mode');
-                updateStatus('Morphing library not loaded');
-                return false;
-            }
-        } else {
-            console.log('[spromoji] Manual selection cancelled or failed');
-            updateStatus('Manual selection cancelled. Try again or upload a different image.');
-            return false;
-        }
+        console.log('[spromoji] ✅ Manual regions selected:', regions);
+        
+        // Store regions for animation
+        avatarRegions = regions;
+        animationEnabled = true;
+        manualLandmarks = true;
+        
+        // Draw region outlines for confirmation
+        drawRegionDebugOutlines(regions);
+        
+        updateStatus('✅ Manual regions mapped - ready to animate!');
+        
+        // Start webcam preview immediately after successful selection
+        await initPreview();
+        
+        return true;
+        
     } catch (error) {
-        console.error('[spromoji] Manual selection error:', error);
-        updateStatus('Manual selection failed. Please try again.');
+        console.error('[spromoji] Manual selection failed:', error);
+        updateStatus('❌ Manual selection cancelled or failed');
         return false;
     }
 }
@@ -409,6 +431,37 @@ function drawDebugPoints(landmarks) {
     });
     
     console.debug('[spromoji] ✅ Debug overlay drawn:', landmarks.length, 'points');
+}
+
+/**
+ * Draw region outlines for debugging
+ * @param {Object} regions - Feature regions to visualize
+ */
+function drawRegionDebugOutlines(regions) {
+    if (!regions) return;
+    
+    debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+    
+    const colors = {
+        lefteye: '#ff4444',
+        righteye: '#44ff44', 
+        mouth: '#4444ff'
+    };
+    
+    for (const [regionName, region] of Object.entries(regions)) {
+        if (region && colors[regionName]) {
+            debugCtx.strokeStyle = colors[regionName];
+            debugCtx.lineWidth = 2;
+            debugCtx.strokeRect(region.x, region.y, region.w, region.h);
+            
+            // Add label
+            debugCtx.fillStyle = colors[regionName];
+            debugCtx.font = '12px Arial';
+            debugCtx.fillText(regionName, region.x + 5, region.y + 15);
+        }
+    }
+    
+    console.debug('[spromoji] ✅ Region debug overlay drawn');
 }
 
 /**
@@ -533,113 +586,97 @@ async function showManualPicker() {
 }
 
 /**
- * Create synthetic 468-point landmark set from 3 manual points
- * @param {Array} points - [leftEye, rightEye, mouth] points
- * @returns {Array} Synthetic landmark array
+ * Draw alignment debug visualization
+ * @param {Array} userTaps - User tap points
+ * @param {Array} alignedLandmarks - Aligned template landmarks
  */
-function createSyntheticLandmarks(points) {
-    const [leftEye, rightEye, mouth] = points;
+function drawAlignmentDebug(userTaps, alignedLandmarks) {
+    // Clear debug canvas
+    debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
     
-    console.log('[spromoji] Creating synthetic landmarks from points:', {
-        leftEye: { x: leftEye.x.toFixed(1), y: leftEye.y.toFixed(1) },
-        rightEye: { x: rightEye.x.toFixed(1), y: rightEye.y.toFixed(1) },
-        mouth: { x: mouth.x.toFixed(1), y: mouth.y.toFixed(1) }
+    // Draw user tap points (red)
+    debugCtx.fillStyle = '#ff4444';
+    userTaps.forEach((tap, index) => {
+        debugCtx.beginPath();
+        debugCtx.arc(tap.x, tap.y, 8, 0, 2 * Math.PI);
+        debugCtx.fill();
+        
+        // Add labels
+        debugCtx.fillStyle = 'white';
+        debugCtx.font = 'bold 12px Arial';
+        debugCtx.textAlign = 'center';
+        debugCtx.fillText(['L', 'R', 'M'][index], tap.x, tap.y + 4);
+        debugCtx.fillStyle = '#ff4444';
     });
     
-    // Ensure points have z coordinates
-    leftEye.z = leftEye.z || 0;
-    rightEye.z = rightEye.z || 0;
-    mouth.z = mouth.z || 0;
-    
-    // Calculate face dimensions
-    const eyeDistance = Math.sqrt(
-        Math.pow(rightEye.x - leftEye.x, 2) + 
-        Math.pow(rightEye.y - leftEye.y, 2)
-    );
-    
-    const faceCenter = {
-        x: (leftEye.x + rightEye.x) / 2,
-        y: (leftEye.y + rightEye.y + mouth.y) / 3,
-        z: 0
-    };
-    
-    console.log('[spromoji] Face analysis:', {
-        eyeDistance: eyeDistance.toFixed(1),
-        faceCenter: { x: faceCenter.x.toFixed(1), y: faceCenter.y.toFixed(1) }
+    // Draw key aligned landmarks (blue)
+    debugCtx.fillStyle = '#4444ff';
+    const keyIndices = [33, 263, 65]; // left eye, right eye, mouth center
+    keyIndices.forEach((idx, index) => {
+        if (alignedLandmarks[idx]) {
+            const landmark = alignedLandmarks[idx];
+            debugCtx.beginPath();
+            debugCtx.arc(landmark.x, landmark.y, 6, 0, 2 * Math.PI);
+            debugCtx.fill();
+        }
     });
     
-    // Generate basic landmark structure
-    const landmarks = new Array(468);
+    console.log('[spromoji] ✅ Alignment debug visualization drawn');
+}
+
+/**
+ * Draw debug overlay showing template vs live landmarks
+ * @param {Array} liveLandmarks - Live user landmarks
+ */
+function drawDebugOverlay(liveLandmarks) {
+    if (!debugOverlayCtx || !debugMode) return;
     
-    // Critical MediaPipe Face Mesh landmark indices
-    landmarks[1] = { x: faceCenter.x, y: faceCenter.y - eyeDistance * 0.3, z: 0 }; // nose tip
-    landmarks[33] = { x: leftEye.x, y: leftEye.y, z: 0 }; // left eye outer corner
-    landmarks[263] = { x: rightEye.x, y: rightEye.y, z: 0 }; // right eye outer corner
-    landmarks[13] = { x: mouth.x, y: mouth.y - 8, z: 0 }; // upper lip center
-    landmarks[14] = { x: mouth.x, y: mouth.y + 8, z: 0 }; // lower lip center
+    debugOverlayCtx.clearRect(0, 0, debugOverlay.width, debugOverlay.height);
     
-    // Additional key landmarks for better morphing
-    landmarks[0] = { x: faceCenter.x, y: mouth.y + eyeDistance * 0.4, z: 0 }; // chin
-    landmarks[10] = { x: faceCenter.x, y: faceCenter.y - eyeDistance * 0.6, z: 0 }; // forehead
-    landmarks[151] = { x: faceCenter.x, y: faceCenter.y, z: 0 }; // nose bridge
-    landmarks[9] = { x: faceCenter.x, y: leftEye.y - eyeDistance * 0.2, z: 0 }; // between eyes
-    
-    // Eye region landmarks
-    for (let i = 154; i <= 158; i++) { // left eye region
-        const angle = ((i - 154) / 4) * Math.PI;
-        landmarks[i] = {
-            x: leftEye.x + Math.cos(angle) * (eyeDistance * 0.08),
-            y: leftEye.y + Math.sin(angle) * (eyeDistance * 0.05),
-            z: 0
-        };
+    if (alignmentData) {
+        // Draw template landmarks (blue)
+        const templateLandmarks = window.ManualAlignment.landmarksToPoints(alignmentData.landmarks);
+        debugOverlayCtx.fillStyle = '#4444ff';
+        templateLandmarks.forEach(landmark => {
+            debugOverlayCtx.beginPath();
+            debugOverlayCtx.arc(landmark.x, landmark.y, 1, 0, 2 * Math.PI);
+            debugOverlayCtx.fill();
+        });
     }
     
-    for (let i = 385; i <= 389; i++) { // right eye region
-        const angle = ((i - 385) / 4) * Math.PI;
-        landmarks[i] = {
-            x: rightEye.x + Math.cos(angle) * (eyeDistance * 0.08),
-            y: rightEye.y + Math.sin(angle) * (eyeDistance * 0.05),
-            z: 0
-        };
-    }
+    // Draw live landmarks (red)
+    debugOverlayCtx.fillStyle = '#ff4444';
+    liveLandmarks.forEach(landmark => {
+        debugOverlayCtx.beginPath();
+        debugOverlayCtx.arc(landmark.x, landmark.y, 1.5, 0, 2 * Math.PI);
+        debugOverlayCtx.fill();
+    });
     
-    // Mouth region landmarks
-    for (let i = 61; i <= 84; i++) { // mouth outline
-        const angle = ((i - 61) / 23) * 2 * Math.PI;
-        const radius = eyeDistance * 0.12;
-        landmarks[i] = {
-            x: mouth.x + Math.cos(angle) * radius,
-            y: mouth.y + Math.sin(angle) * radius * 0.6,
-            z: 0
-        };
-    }
-    
-    // Fill remaining landmarks with interpolated positions around face boundary
-    for (let i = 0; i < 468; i++) {
-        if (!landmarks[i]) {
-            // Create a more realistic face outline
-            const angle = (i / 468) * 2 * Math.PI;
-            const radiusX = eyeDistance * (0.6 + Math.random() * 0.2);
-            const radiusY = eyeDistance * (0.7 + Math.random() * 0.2);
+    // Draw feature triangle outlines (lime)
+    if (alignmentData && alignmentData.featureTriangles) {
+        debugOverlayCtx.strokeStyle = '#00ff00';
+        debugOverlayCtx.lineWidth = 1;
+        
+        for (const triIndex of alignmentData.featureTriangles) {
+            const i = triIndex * 3;
+            const triangles = alignmentData.triangulation;
             
-            landmarks[i] = {
-                x: faceCenter.x + Math.cos(angle) * radiusX,
-                y: faceCenter.y + Math.sin(angle) * radiusY,
-                z: (Math.random() - 0.5) * 0.01 // Small z variation
-            };
+            if (i < triangles.length - 2) {
+                const idx0 = triangles[i];
+                const idx1 = triangles[i + 1];
+                const idx2 = triangles[i + 2];
+                
+                if (liveLandmarks[idx0] && liveLandmarks[idx1] && liveLandmarks[idx2]) {
+                    debugOverlayCtx.beginPath();
+                    debugOverlayCtx.moveTo(liveLandmarks[idx0].x, liveLandmarks[idx0].y);
+                    debugOverlayCtx.lineTo(liveLandmarks[idx1].x, liveLandmarks[idx1].y);
+                    debugOverlayCtx.lineTo(liveLandmarks[idx2].x, liveLandmarks[idx2].y);
+                    debugOverlayCtx.closePath();
+                    debugOverlayCtx.stroke();
+                }
+            }
         }
     }
-    
-    console.log('[spromoji] ✅ Created', landmarks.length, 'synthetic landmarks');
-    console.log('[spromoji] Key landmarks check:', {
-        nose: landmarks[1] ? 'OK' : 'Missing',
-        leftEye: landmarks[33] ? 'OK' : 'Missing',
-        rightEye: landmarks[263] ? 'OK' : 'Missing',
-        upperLip: landmarks[13] ? 'OK' : 'Missing',
-        lowerLip: landmarks[14] ? 'OK' : 'Missing'
-    });
-    
-    return landmarks;
 }
 
 /**
@@ -647,15 +684,39 @@ function createSyntheticLandmarks(points) {
  */
 async function initPreview() {
     if (previewRunning) {
-        console.log('[spromoji] Preview already running');
+        updateStatus('Preview already running');
         return;
     }
     
-    console.log('[spromoji] Starting webcam...');
-    updateStatus('Starting camera...');
+    updateStatus('🔧 Debug: Starting webcam...');
+    
+    // Validate prerequisites with visible feedback
+    if (!avatarImg) {
+        updateStatus('❌ Debug: No avatar image loaded');
+        return;
+    }
+    
+    if (!liveMesh) {
+        updateStatus('❌ Debug: Face detection not ready - initializing MediaPipe...');
+        // Try to initialize MediaPipe if not ready
+        try {
+            await initializeMediaPipe();
+            if (!liveMesh) {
+                updateStatus('❌ Debug: MediaPipe initialization failed');
+                return;
+            }
+            updateStatus('✅ Debug: MediaPipe initialized');
+        } catch (error) {
+            updateStatus('❌ Debug: MediaPipe error - ' + error.message);
+            return;
+        }
+    }
+    
     previewRunning = true;
     
     try {
+        updateStatus('🔧 Debug: Requesting camera access...');
+        
         const stream = await navigator.mediaDevices.getUserMedia({
             video: {
                 width: { ideal: 640 },
@@ -664,8 +725,16 @@ async function initPreview() {
             }
         });
         
+        updateStatus('✅ Debug: Camera stream obtained');
         cam.srcObject = stream;
-        console.log('[spromoji] ✅ Webcam started');
+        
+        updateStatus('🔧 Debug: Setting up MediaPipe camera...');
+        
+        // Check if Camera class is available
+        if (!window.Camera) {
+            updateStatus('❌ Debug: MediaPipe Camera class not available');
+            return;
+        }
         
         // Initialize camera processing
         camera = new Camera(cam, {
@@ -678,27 +747,32 @@ async function initPreview() {
             height: 480
         });
         
+        updateStatus('🔧 Debug: Starting camera processing...');
         await camera.start();
+        
+        updateStatus('✅ Debug: Camera started successfully');
         
         // Give camera a moment to initialize
         setTimeout(() => {
             const statusMsg = manualLandmarks 
-                ? 'Manual landmarks - limited morphing active'
+                ? '✅ Manual landmarks - template morphing active!'
                 : morphingEnabled 
-                    ? 'Full facial morphing active!'
-                    : 'Ready! Use manual selection or try uploading a clearer photo for auto-detection';
+                    ? '✅ Full facial morphing active!'
+                    : '✅ Ready! Camera active - try manual selection';
                     
             updateStatus(statusMsg);
-            console.log('[spromoji] ✅ System ready - morphing:', morphingEnabled, 'manual:', manualLandmarks);
-        }, 500);
+            
+            // Visual debug info in status
+            setTimeout(() => {
+                updateStatus(`Debug: Morph=${morphingEnabled}, Manual=${manualLandmarks}, Landmarks=${!!avatarLandmarks}`);
+            }, 2000);
+            
+        }, 1000);
         
         hideLoading();
         
-        console.log('[spromoji] ✅ Face tracking active');
-        
     } catch (error) {
-        console.error('[spromoji] Camera initialization failed:', error);
-        updateStatus('Camera access denied');
+        updateStatus('❌ Debug: Camera failed - ' + error.name + ': ' + error.message);
         hideLoading();
         previewRunning = false;
     }
@@ -727,20 +801,35 @@ function onLiveFaceResults(results) {
         z: landmark.z || 0
     }));
     
-    if (morphingEnabled && avatarLandmarks && avatarTriangulation && window.FacialMorph) {
-        morphAvatarFace(scaledUserLandmarks);
-    } else {
-        // Debug why morphing isn't working
-        if (frameCount % 60 === 0) { // Log every 2 seconds
-            console.debug('[spromoji] Morphing check:', {
-                morphingEnabled,
-                hasAvatarLandmarks: !!avatarLandmarks,
-                hasTriangulation: !!avatarTriangulation,
-                hasFacialMorph: !!window.FacialMorph,
-                manualMode: manualLandmarks
-            });
+    // Use region-based animation if available
+    if (animationEnabled && avatarRegions && window.RegionAnimator) {
+        // Use the new region-based animation system
+        window.RegionAnimator.animateFeatureRegions(
+            ctx, // Use avatar canvas context as both source and destination
+            ctx,
+            avatarRegions,
+            scaledUserLandmarks,
+            avatarImg
+        );
+        
+        // Status update occasionally
+        if (frameCount % 180 === 0) {
+            updateStatus('🎭 Region-based animation active');
         }
-        fallbackAnimation(scaledUserLandmarks);
+    } else {
+        // Show static avatar if no animation available
+        ctx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
+        ctx.drawImage(avatarImg, 0, 0, avatarCanvas.width, avatarCanvas.height);
+        
+        // Debug why animation isn't working
+        if (frameCount % 90 === 0) {
+            updateStatus(`❌ Debug: Animation disabled - Enabled:${animationEnabled}, Regions:${!!avatarRegions}`);
+        }
+    }
+    
+    // Update debug overlay
+    if (debugMode && debugOverlayCtx) {
+        drawDebugOverlay(scaledUserLandmarks);
     }
     
     // Performance logging
@@ -751,97 +840,174 @@ function onLiveFaceResults(results) {
     }
 }
 
+// Old morphing functions removed - now using RegionAnimator.animateFeatureRegions()
+
 /**
- * P1: Perform real-time facial morphing using triangulation
- * @param {Array} userLandmarks - Live user facial landmarks
+ * Compute eye gaze direction from landmarks
+ * @param {Array} landmarks - Facial landmarks
+ * @returns {Object} Eye direction {x, y}
  */
-function morphAvatarFace(userLandmarks) {
-    try {
-        console.debug('[spromoji] Morphing frame - manual mode:', manualLandmarks);
-        
-        // Get optimized triangle set for expressive regions
-        const expressionTriangles = window.FacialMorph.getExpressionTriangles(
-            avatarTriangulation.triangles
-        );
-        
-        console.debug('[spromoji] Expression triangles:', expressionTriangles.length / 3);
-        
-        // Apply head rotation first
-        const roll = computeHeadRoll(userLandmarks);
-        
-        ctx.save();
-        ctx.clearRect(0, 0, avatarCanvas.width, avatarCanvas.height);
-        
-        // Apply rotation around center
-        ctx.translate(avatarCanvas.width / 2, avatarCanvas.height / 2);
-        ctx.rotate(roll);
-        ctx.translate(-avatarCanvas.width / 2, -avatarCanvas.height / 2);
-        
-        // P1: Morph facial features using triangulation
-        window.FacialMorph.morphFace(
-            avatarSrcCtx,
-            ctx,
-            avatarLandmarks,
-            userLandmarks,
-            expressionTriangles
-        );
-        
-        ctx.restore();
-        
-        // Log performance metrics
-        window.FacialMorph.logMorphPerformance();
-        
-    } catch (error) {
-        console.error('[morph] Morphing failed, falling back:', error);
-        morphingEnabled = false; // Disable morphing on error
-        fallbackAnimation(userLandmarks);
-    }
+function computeEyeDirection(landmarks) {
+    if (!landmarks || landmarks.length < 468) return { x: 0, y: 0 };
+    
+    // Get eye center points
+    const leftEyeCenter = landmarks[159]; // Left eye center
+    const rightEyeCenter = landmarks[386]; // Right eye center
+    const noseTip = landmarks[1]; // Nose tip for reference
+    
+    if (!leftEyeCenter || !rightEyeCenter || !noseTip) return { x: 0, y: 0 };
+    
+    // Calculate relative eye position to face center
+    const eyeCenterX = (leftEyeCenter.x + rightEyeCenter.x) / 2;
+    const eyeCenterY = (leftEyeCenter.y + rightEyeCenter.y) / 2;
+    
+    // Use nose as reference point
+    const deltaX = (eyeCenterX - noseTip.x) * 0.5; // Scale down movement
+    const deltaY = (eyeCenterY - noseTip.y) * 0.5;
+    
+    return { x: deltaX, y: deltaY };
 }
 
 /**
- * Fallback animation for when morphing is unavailable
- * @param {Array} userLandmarks - Live user facial landmarks
+ * Compute blink state from landmarks
+ * @param {Array} landmarks - Facial landmarks
+ * @returns {Object} Blink state {left, right}
  */
-function fallbackAnimation(userLandmarks) {
-    if (!avatarImg) return;
+function computeBlinkState(landmarks) {
+    if (!landmarks || landmarks.length < 468) return { left: 1, right: 1 };
     
-    const roll = computeHeadRoll(userLandmarks);
-    const mouthOpen = computeMouthOpenness(userLandmarks);
+    // Left eye landmarks (top and bottom)
+    const leftEyeTop = landmarks[159];
+    const leftEyeBottom = landmarks[145];
     
-    const centerX = avatarCanvas.width / 2;
-    const centerY = avatarCanvas.height / 2;
-    const width = avatarCanvas.width;
-    const height = avatarCanvas.height;
+    // Right eye landmarks
+    const rightEyeTop = landmarks[386];
+    const rightEyeBottom = landmarks[374];
     
-    // Clear and apply basic transforms
-    ctx.clearRect(0, 0, width, height);
+    if (!leftEyeTop || !leftEyeBottom || !rightEyeTop || !rightEyeBottom) {
+        return { left: 1, right: 1 };
+    }
+    
+    // Calculate eye openness
+    const leftOpenness = Math.abs(leftEyeTop.y - leftEyeBottom.y);
+    const rightOpenness = Math.abs(rightEyeTop.y - rightEyeBottom.y);
+    
+    // Normalize to 0-1 range (0 = closed, 1 = open)
+    const normalizedLeft = Math.min(1, Math.max(0, leftOpenness * 100)); // Amplify small differences
+    const normalizedRight = Math.min(1, Math.max(0, rightOpenness * 100));
+    
+    return {
+        left: normalizedLeft > 0.3 ? 1 : 0, // Binary blink detection
+        right: normalizedRight > 0.3 ? 1 : 0
+    };
+}
+
+/**
+ * Draw enhanced facial features overlay
+ * @param {Object} eyeDirection - Eye gaze direction
+ * @param {Object} blinkState - Blink state
+ * @param {boolean} mouthOpen - Mouth openness
+ */
+function drawEnhancedFeatures(eyeDirection, blinkState, mouthOpen) {
+    // Get manual points positions (from global scope)
+    const leftEyePos = window.manualPoints[0];   // Left eye tap
+    const rightEyePos = window.manualPoints[1];  // Right eye tap  
+    const mouthPos = window.manualPoints[2];     // Mouth tap
+    
     ctx.save();
     
-    // Rotate around center
-    ctx.translate(centerX, centerY);
-    ctx.rotate(roll * 0.3); // Reduce rotation intensity
+    // Draw animated eyes with gaze tracking
+    drawAnimatedEye(leftEyePos, eyeDirection, blinkState.left, 'left');
+    drawAnimatedEye(rightEyePos, eyeDirection, blinkState.right, 'right');
     
-    // Draw avatar
-    ctx.drawImage(avatarImg, -width/2, -height/2, width, height);
+    // Draw animated mouth
+    drawAnimatedMouth(mouthPos, mouthOpen);
     
-    // Simple mouth effect
-    if (mouthOpen) {
-        ctx.save();
-        ctx.scale(1, 1.05);
-        ctx.globalAlpha = 0.4;
+    ctx.restore();
+}
+
+/**
+ * Draw animated eye overlay with gaze tracking
+ * @param {Object} eyePos - Eye position from manual selection
+ * @param {Object} direction - Gaze direction
+ * @param {number} openness - Eye openness (0-1)
+ * @param {string} side - 'left' or 'right'
+ */
+function drawAnimatedEye(eyePos, direction, openness, side) {
+    const eyeSize = 12;
+    const pupilSize = 6;
+    
+    ctx.save();
+    
+    // Eye background (white)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    ctx.beginPath();
+    ctx.ellipse(eyePos.x, eyePos.y, eyeSize, eyeSize * openness, 0, 0, 2 * Math.PI);
+    ctx.fill();
+    
+    // Eye border
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    if (openness > 0.5) { // Only draw pupil if eye is open
+        // Pupil following gaze (amplify movement)
+        const pupilX = eyePos.x + direction.x * 3;
+        const pupilY = eyePos.y + direction.y * 3;
+        
+        // Iris (colored part)
+        ctx.fillStyle = 'rgba(100, 150, 200, 0.8)'; // Blue iris
         ctx.beginPath();
-        ctx.ellipse(0, height * 0.1, width * 0.15, height * 0.06, 0, 0, 2 * Math.PI);
-        ctx.clip();
-        ctx.drawImage(avatarImg, -width/2, -height/2 + 3, width, height);
-        ctx.restore();
+        ctx.ellipse(pupilX, pupilY, pupilSize + 2, (pupilSize + 2) * openness, 0, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Pupil (black center)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.9)';
+        ctx.beginPath();
+        ctx.ellipse(pupilX, pupilY, pupilSize, pupilSize * openness, 0, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Add light reflection
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.beginPath();
+        ctx.ellipse(pupilX + 2, pupilY - 2, 2, 2 * openness, 0, 0, 2 * Math.PI);
+        ctx.fill();
     }
     
     ctx.restore();
+}
+
+/**
+ * Draw animated mouth overlay
+ * @param {Object} mouthPos - Mouth position from manual selection
+ * @param {boolean} mouthOpen - Mouth openness
+ */
+function drawAnimatedMouth(mouthPos, mouthOpen) {
+    const mouthWidth = 25;
+    const mouthHeight = mouthOpen ? 15 : 8; // Bigger opening when talking
     
-    // Debug log occasionally
-    if (frameCount % 120 === 0) {
-        console.debug('[spromoji] Fallback animation active - roll:', roll.toFixed(3), 'mouth:', mouthOpen);
+    ctx.save();
+    
+    // Mouth shape (red/pink)
+    ctx.fillStyle = mouthOpen ? 'rgba(180, 50, 50, 0.8)' : 'rgba(200, 100, 100, 0.7)';
+    ctx.beginPath();
+    ctx.ellipse(mouthPos.x, mouthPos.y, mouthWidth, mouthHeight, 0, 0, 2 * Math.PI);
+    ctx.fill();
+    
+    // Mouth border
+    ctx.strokeStyle = 'rgba(150, 50, 50, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Add teeth when mouth is open
+    if (mouthOpen) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.beginPath();
+        ctx.ellipse(mouthPos.x, mouthPos.y - mouthHeight * 0.3, mouthWidth * 0.8, mouthHeight * 0.4, 0, 0, 2 * Math.PI);
+        ctx.fill();
     }
+    
+    ctx.restore();
 }
 
 /**
@@ -861,10 +1027,26 @@ function computeHeadRoll(landmarks) {
  * @returns {boolean} Whether mouth is open
  */
 function computeMouthOpenness(landmarks) {
-    const upperLip = landmarks[13];
-    const lowerLip = landmarks[14];
+    if (!landmarks || landmarks.length < 468) return false;
+    
+    // Use more reliable mouth landmarks
+    const upperLip = landmarks[13];   // Upper lip center
+    const lowerLip = landmarks[14];   // Lower lip center
+    const leftCorner = landmarks[61]; // Left mouth corner
+    const rightCorner = landmarks[291]; // Right mouth corner
+    
+    if (!upperLip || !lowerLip || !leftCorner || !rightCorner) return false;
+    
+    // Calculate mouth opening height
     const mouthHeight = Math.abs(lowerLip.y - upperLip.y);
-    return mouthHeight > 0.01 * avatarCanvas.height; // Scale to canvas
+    
+    // Calculate mouth width for proportion
+    const mouthWidth = Math.abs(rightCorner.x - leftCorner.x);
+    
+    // Mouth is open if height is significant relative to width
+    const openRatio = mouthHeight / mouthWidth;
+    
+    return openRatio > 0.05; // More sensitive threshold
 }
 
 /**
@@ -878,19 +1060,18 @@ function startRecording() {
     
     console.log('[spromoji] Starting recording...');
     console.log('[spromoji] Recording state check:', {
-        morphingEnabled,
+        animationEnabled,
         manualLandmarks,
-        hasAvatarLandmarks: !!avatarLandmarks,
-        hasTriangulation: !!avatarTriangulation
+        hasAvatarRegions: !!avatarRegions
     });
     
     isRecording = true;
     startBtn.disabled = true;
     startBtn.textContent = '🎬 Recording... (5s)';
     
-    const recordingStatus = morphingEnabled 
-        ? `Recording ${manualLandmarks ? 'manual' : 'full'} morphing animation...`
-        : 'Recording basic animation...';
+    const recordingStatus = animationEnabled 
+        ? `Recording ${manualLandmarks ? 'manual' : 'auto-detected'} regions animation...`
+        : 'Recording static avatar...';
     updateStatus(recordingStatus);
     
     // Create MediaRecorder from canvas stream
@@ -953,7 +1134,7 @@ function startRecording() {
         isRecording = false;
         startBtn.disabled = false;
         startBtn.textContent = '🎬 Start Recording';
-        updateStatus(`Recording complete! ${morphingEnabled ? 'Morphing' : 'Basic'} animation saved.`);
+        updateStatus(`Recording complete! ${animationEnabled ? 'Region-based' : 'Static'} animation saved.`);
         
         console.log('[spromoji] Download link created, blob size:', blob.size, 'bytes');
     };
