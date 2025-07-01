@@ -4,24 +4,21 @@
 
 console.log('[morph] SPROMOJI Facial Morphing starting...');
 
-// DOM elements
-const cam = document.getElementById('cam');
-const avatarCanvas = document.getElementById('avatarCanvas');
-const ctx = avatarCanvas.getContext('2d');
-const avatarInput = document.getElementById('avatarInput');
-const startBtn = document.getElementById('startBtn');
-const loadingIndicator = document.getElementById('loading');
-const statusText = document.getElementById('status');
+// DOM elements (initialized in initializeApp)
+let cam, avatarCanvas, debugCanvas, ctx, debugCtx;
+let avatarInput, startBtn, loadingIndicator, statusText;
 
 // Global state
 let avatarImg = null;
 let avatarLandmarks = null;    // P0: Cached avatar facial landmarks
 let avatarTriangulation = null; // P0: Cached triangulation data
-let faceMesh = null;
+let avatarMesh = null;  // Dedicated to static avatar analysis
+let liveMesh = null;    // Dedicated to webcam streaming
 let camera = null;
 let isRecording = false;
 let previewRunning = false;
 let morphingEnabled = false;   // P1: Fallback flag
+let manualLandmarks = false;
 
 // Performance monitoring
 let lastFrameTime = 0;
@@ -31,198 +28,440 @@ let frameCount = 0;
 let avatarSrcCanvas = null;
 let avatarSrcCtx = null;
 
+// Promise resolvers for avatar detection
+let avatarDetectResolve = null;
+
 // Telegram WebApp initialization
 const tg = window.Telegram?.WebApp;
 if (tg && tg.expand) tg.expand();
 
 /**
- * Robust avatar loader with CORS fallback
- * @param {string} src - Image URL
+ * Initialize the application when DOM is ready
+ */
+async function initializeApp() {
+    console.log('[spromoji] DOM ready, initializing...');
+    
+    // Get DOM elements
+    avatarCanvas = document.getElementById('avatarCanvas');
+    debugCanvas = document.getElementById('debugCanvas');
+    cam = document.getElementById('cam');
+    startBtn = document.getElementById('startBtn');
+    avatarInput = document.getElementById('avatarInput');
+    loadingIndicator = document.getElementById('loading');
+    statusText = document.getElementById('status');
+    
+    if (!avatarCanvas || !debugCanvas) {
+        console.error('[spromoji] Required canvas elements not found');
+        return;
+    }
+    
+    // Initialize contexts
+    ctx = avatarCanvas.getContext('2d');
+    debugCtx = debugCanvas.getContext('2d');
+    
+    // Create off-screen canvas for avatar processing
+    avatarSrcCanvas = document.createElement('canvas');
+    avatarSrcCtx = avatarSrcCanvas.getContext('2d');
+    
+    console.log('[spromoji] Canvas contexts initialized');
+    
+    // Set up event listeners
+    if (avatarInput) {
+        avatarInput.addEventListener('change', handleFileUpload);
+    }
+    
+    startBtn.addEventListener('click', startRecording);
+    
+    // Auto-load avatar from URL parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    const avatarParam = urlParams.get('avatar');
+    
+    if (avatarParam) {
+        console.log('[spromoji] Loading avatar from URL:', avatarParam);
+        await loadAvatar(avatarParam);
+    } else {
+        updateStatus('Upload an avatar image to begin');
+        hideLoading();
+    }
+}
+
+/**
+ * Load and process avatar image
+ * @param {string} src - Image source URL
  */
 async function loadAvatar(src) {
-    console.log('[morph] Loading avatar:', src);
-    updateStatus('Loading avatar image...');
-    
     try {
-        await drawImage(src);
-        console.debug('[morph] Avatar loaded successfully');
+        console.log('[spromoji] Loading avatar:', src);
+        updateStatus('Loading avatar image...');
         
-        // P0: Try to analyze avatar for facial landmarks (will defer if MediaPipe not ready)
-        const analysisSuccess = await analyzeAvatarFace();
-        if (!analysisSuccess) {
-            console.log('[morph] Avatar analysis deferred - will retry when MediaPipe ready');
+        avatarImg = new Image();
+        avatarImg.crossOrigin = 'anonymous';
+        
+        await new Promise((resolve, reject) => {
+            avatarImg.onload = resolve;
+            avatarImg.onerror = reject;
+            avatarImg.src = src;
+        });
+        
+        console.log('[spromoji] ✅ Avatar loaded:', avatarImg.width, 'x', avatarImg.height);
+        
+        // Set canvas dimensions
+        const maxSize = 500;
+        const scale = Math.min(maxSize / avatarImg.width, maxSize / avatarImg.height);
+        
+        avatarCanvas.width = avatarImg.width * scale;
+        avatarCanvas.height = avatarImg.height * scale;
+        
+        // Sync debug canvas dimensions
+        if (debugCanvas) {
+            debugCanvas.width = avatarCanvas.width;
+            debugCanvas.height = avatarCanvas.height;
         }
         
-    } catch (e) {
-        console.warn('[morph] Primary load failed, trying CORS fallback');
-        try {
-            // Fallback: fetch as blob then ObjectURL to bypass CORS
-            const blob = await fetch(src).then(r => r.blob());
-            const localUrl = URL.createObjectURL(blob);
-            await drawImage(localUrl);
-            console.debug('[morph] Fallback load successful');
-            
-            // P0: Try to analyze avatar for facial landmarks (will defer if MediaPipe not ready)
-            const analysisSuccess = await analyzeAvatarFace();
-            if (!analysisSuccess) {
-                console.log('[morph] Avatar analysis deferred - will retry when MediaPipe ready');
-            }
-            
-        } catch (fallbackError) {
-            console.error('[morph] Both loading methods failed:', fallbackError);
-            updateStatus('Failed to load avatar image');
-            hideLoading(); // Make sure loading is hidden on failure
-            throw fallbackError;
-        }
+        // Set up source canvas
+        avatarSrcCanvas.width = avatarCanvas.width;
+        avatarSrcCanvas.height = avatarCanvas.height;
+        avatarSrcCtx.drawImage(avatarImg, 0, 0, avatarCanvas.width, avatarCanvas.height);
+        
+        // Initial draw
+        ctx.drawImage(avatarImg, 0, 0, avatarCanvas.width, avatarCanvas.height);
+        
+        console.log('[spromoji] Canvas dimensions set:', avatarCanvas.width, 'x', avatarCanvas.height);
+        
+        // Initialize MediaPipe and analyze avatar
+        await initializeMediaPipe();
+        await analyzeAvatarWithRetry();
+        
+        // Start webcam preview
+        await initPreview();
+        
+    } catch (error) {
+        console.error('[spromoji] Failed to load avatar:', error);
+        updateStatus('Failed to load avatar image');
+        hideLoading();
     }
-    
-    // Start face-mesh preview once avatar is ready
-    initPreview();
 }
 
 /**
- * Draw image to canvas and prepare for morphing
- * @param {string} url - Image URL
+ * Handle file upload from input
+ * @param {Event} event - File input change event
  */
-function drawImage(url) {
-    return new Promise((resolve, reject) => {
-        const img = new Image();
-        
-        img.onload = () => {
-            avatarImg = img;
-            
-            // Downscale to max 256px for performance (P1 optimization)
-            const maxSize = 256;
-            const scale = Math.min(maxSize / img.width, maxSize / img.height);
-            const scaledWidth = Math.floor(img.width * scale);
-            const scaledHeight = Math.floor(img.height * scale);
-            
-            // Set canvas size
-            avatarCanvas.width = scaledWidth;
-            avatarCanvas.height = scaledHeight;
-            
-            // Create off-screen source canvas for morphing
-            avatarSrcCanvas = document.createElement('canvas');
-            avatarSrcCanvas.width = scaledWidth;
-            avatarSrcCanvas.height = scaledHeight;
-            avatarSrcCtx = avatarSrcCanvas.getContext('2d');
-            
-            // Draw initial image to both canvases
-            ctx.drawImage(img, 0, 0, scaledWidth, scaledHeight);
-            avatarSrcCtx.drawImage(img, 0, 0, scaledWidth, scaledHeight);
-            
-            updateStatus('Avatar loaded! Preparing face tracking...');
-            resolve();
-        };
-        
-        img.onerror = (error) => {
-            console.error('[morph] Image load error:', error);
-            reject(new Error('Failed to load image'));
-        };
-        
-        // No crossOrigin - proxy handles CORS
-        img.src = url;
+function handleFileUpload(event) {
+    const file = event.target.files[0];
+    if (file) {
+        const url = URL.createObjectURL(file);
+        loadAvatar(url);
+    }
+}
+
+/**
+ * Initialize MediaPipe face mesh instances
+ */
+async function initializeMediaPipe() {
+    console.log('[spromoji] Initializing MediaPipe...');
+    updateStatus('Loading facial recognition...');
+    
+    await waitForMediaPipe();
+    
+    // Create separate FaceMesh for avatar analysis
+    avatarMesh = new FaceMesh({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
     });
+    
+    avatarMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.5
+    });
+    
+    // Create separate FaceMesh for live webcam
+    liveMesh = new FaceMesh({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+    
+    liveMesh.setOptions({
+        maxNumFaces: 1,
+        refineLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+    
+    liveMesh.onResults(onLiveFaceResults);
+    
+    console.log('[spromoji] ✅ MediaPipe instances created');
 }
 
 /**
- * P0: Analyze static avatar image to detect facial landmarks
+ * Analyze avatar with retry logic and downscaling
  */
-async function analyzeAvatarFace() {
-    if (!faceMesh) {
-        console.log('[morph] FaceMesh not ready, will analyze later');
-        return false;
-    }
-    
-    console.log('[morph] Analyzing avatar facial structure...');
+async function analyzeAvatarWithRetry() {
+    console.log('[spromoji] Starting avatar facial analysis...');
     updateStatus('Detecting facial landmarks...');
     
+    // Clear debug overlay
+    debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+    
     try {
-        // Send avatar to MediaPipe for landmark detection with timeout
+        // Try multiple sizes for better detection
+        for (const maxSize of [512, 256]) {
+            console.log('[spromoji] Attempting detection at max size:', maxSize);
+            
+            const landmarks = await attemptAvatarDetection(maxSize);
+            if (landmarks && landmarks.length > 0) {
+                console.log('[spromoji] ✅ Avatar detection successful at', maxSize, 'px');
+                
+                avatarLandmarks = landmarks;
+                drawDebugPoints(landmarks);
+                
+                // Create triangulation
+                if (window.FacialMorph && window.Delaunator) {
+                    try {
+                        avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
+                        morphingEnabled = true;
+                        manualLandmarks = false;
+                        console.log('[spromoji] ✅ Triangulation created:', avatarTriangulation.triangles.length / 3, 'triangles');
+                        return true;
+                    } catch (triangulationError) {
+                        console.error('[spromoji] ❌ Triangulation failed:', triangulationError);
+                    }
+                }
+            }
+            
+            console.warn('[spromoji] ❌ Avatar detection failed at', maxSize, 'px');
+        }
+        
+        // All automatic detection failed - show manual picker
+        console.warn('[spromoji] ❌ Automatic detection failed, showing manual picker');
+        const manualPoints = await showManualPicker();
+        
+        if (manualPoints && manualPoints.length === 3) {
+            avatarLandmarks = createSyntheticLandmarks(manualPoints);
+            manualLandmarks = true;
+            drawDebugPoints(avatarLandmarks.slice(0, 10)); // Show key points only
+            
+            if (window.FacialMorph) {
+                avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
+                morphingEnabled = true;
+                console.log('[spromoji] ✅ Manual landmarks created');
+                return true;
+            }
+        }
+        
+        // Complete failure
+        console.error('[spromoji] ❌ All detection methods failed');
+        morphingEnabled = false;
+        return false;
+        
+    } catch (error) {
+        console.error('[spromoji] Avatar analysis error:', error);
+        morphingEnabled = false;
+        return false;
+    }
+}
+
+/**
+ * Attempt avatar detection at specified max size
+ * @param {number} maxSize - Maximum image dimension
+ * @returns {Array|null} Detected landmarks or null
+ */
+async function attemptAvatarDetection(maxSize) {
+    // Create scaled canvas
+    const scale = Math.min(maxSize / avatarImg.width, maxSize / avatarImg.height, 1);
+    const scaledWidth = Math.floor(avatarImg.width * scale);
+    const scaledHeight = Math.floor(avatarImg.height * scale);
+    
+    const scaledCanvas = document.createElement('canvas');
+    scaledCanvas.width = scaledWidth;
+    scaledCanvas.height = scaledHeight;
+    
+    const scaledCtx = scaledCanvas.getContext('2d');
+    scaledCtx.drawImage(avatarImg, 0, 0, scaledWidth, scaledHeight);
+    
+    console.debug('[spromoji] Scaled image:', scaledWidth, 'x', scaledHeight);
+    
+    try {
+        // Send to MediaPipe with timeout
         const results = await Promise.race([
             new Promise((resolve) => {
-                const originalHandler = faceMesh.onResults;
-                
-                // Temporary handler for avatar analysis
-                faceMesh.onResults = (results) => {
-                    faceMesh.onResults = originalHandler; // Restore original handler
-                    resolve(results);
+                avatarDetectResolve = resolve;
+                avatarMesh.onResults = (results) => {
+                    avatarDetectResolve(results);
                 };
-                
-                faceMesh.send({ image: avatarSrcCanvas });
+                avatarMesh.send({ image: scaledCanvas });
             }),
             new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Avatar analysis timeout')), 5000)
+                setTimeout(() => reject(new Error('Detection timeout')), 8000)
             )
         ]);
         
         if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-            avatarLandmarks = results.multiFaceLandmarks[0];
+            const landmarks = results.multiFaceLandmarks[0];
             
-            // Scale landmarks to canvas coordinates
-            for (let landmark of avatarLandmarks) {
-                landmark.x *= avatarCanvas.width;
-                landmark.y *= avatarCanvas.height;
-            }
+            // Scale landmarks back to avatar canvas coordinates
+            const scaleFactor = Math.min(avatarCanvas.width / scaledWidth, avatarCanvas.height / scaledHeight);
+            const offsetX = (avatarCanvas.width - scaledWidth * scaleFactor) / 2;
+            const offsetY = (avatarCanvas.height - scaledHeight * scaleFactor) / 2;
             
-            console.log('[morph] ✅ Avatar landmarks detected:', avatarLandmarks.length, 'points');
-            console.log('[morph] Sample landmarks:', {
-                nose: avatarLandmarks[1],
-                leftEye: avatarLandmarks[33],
-                rightEye: avatarLandmarks[263],
-                mouth: avatarLandmarks[13]
-            });
-            
-            // P0: Create triangulation
-            console.log('[morph] Dependencies check - FacialMorph:', !!window.FacialMorph, 'Delaunator:', !!window.Delaunator);
-            if (window.FacialMorph && window.Delaunator) {
-                try {
-                    avatarTriangulation = window.FacialMorph.triangulatePoints(avatarLandmarks);
-                    morphingEnabled = true;
-                    updateStatus('Facial morphing ready! Camera starting...');
-                    console.log('[morph] ✅ Triangulation created, morphing enabled');
-                    return true;
-                } catch (triangulationError) {
-                    console.error('[morph] ❌ Triangulation failed:', triangulationError);
-                    morphingEnabled = false;
-                    updateStatus('Triangulation failed - using basic rotation mode');
-                    return false;
-                }
-            } else {
-                console.warn('[morph] ❌ Missing dependencies - FacialMorph:', !!window.FacialMorph, 'Delaunator:', !!window.Delaunator);
-                morphingEnabled = false;
-                updateStatus('Morphing libraries not loaded - using basic rotation mode');
-                return false;
-            }
-        } else {
-            console.warn('[morph] No face detected in avatar, using fallback mode');
-            morphingEnabled = false;
-            updateStatus('No face detected - using basic rotation mode');
-            return false;
+            return landmarks.map(landmark => ({
+                x: landmark.x * scaledWidth * scaleFactor + offsetX,
+                y: landmark.y * scaledHeight * scaleFactor + offsetY,
+                z: landmark.z || 0
+            }));
         }
         
+        return null;
+        
     } catch (error) {
-        console.error('[morph] Avatar analysis failed:', error);
-        morphingEnabled = false;
-        updateStatus('Face analysis failed - using basic rotation mode');
-        return false;
+        console.warn('[spromoji] Detection attempt failed:', error.message);
+        return null;
     }
 }
 
 /**
- * Initialize webcam and face tracking
+ * Draw debug landmarks overlay
+ * @param {Array} landmarks - Facial landmarks to visualize
+ */
+function drawDebugPoints(landmarks) {
+    debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+    debugCtx.fillStyle = '#00ff00';
+    debugCtx.strokeStyle = '#00ff00';
+    debugCtx.lineWidth = 1;
+    
+    landmarks.forEach((landmark, index) => {
+        const x = landmark.x;
+        const y = landmark.y;
+        
+        // Draw small green circle
+        debugCtx.beginPath();
+        debugCtx.arc(x, y, 1.5, 0, 2 * Math.PI);
+        debugCtx.fill();
+        
+        // Highlight key landmarks
+        if ([1, 33, 263, 13, 14].includes(index)) { // nose, eyes, mouth
+            debugCtx.beginPath();
+            debugCtx.arc(x, y, 3, 0, 2 * Math.PI);
+            debugCtx.stroke();
+        }
+    });
+    
+    console.debug('[spromoji] ✅ Debug overlay drawn:', landmarks.length, 'points');
+}
+
+/**
+ * Show manual 3-point picker interface
+ * @returns {Promise<Array>} Array of 3 picked points
+ */
+async function showManualPicker() {
+    return new Promise((resolve) => {
+        updateStatus('Tap 3 points: left eye, right eye, mouth center');
+        
+        const points = [];
+        let clickHandler;
+        
+        clickHandler = (event) => {
+            const rect = avatarCanvas.getBoundingClientRect();
+            const x = (event.clientX - rect.left) * (avatarCanvas.width / rect.width);
+            const y = (event.clientY - rect.top) * (avatarCanvas.height / rect.height);
+            
+            points.push({ x, y });
+            
+            // Draw point
+            debugCtx.fillStyle = '#ff0000';
+            debugCtx.beginPath();
+            debugCtx.arc(x, y, 4, 0, 2 * Math.PI);
+            debugCtx.fill();
+            
+            console.log('[spromoji] Manual point', points.length, ':', { x, y });
+            
+            if (points.length === 1) {
+                updateStatus(`Good! Now tap the right eye (${points.length}/3)`);
+            } else if (points.length === 2) {
+                updateStatus(`Perfect! Now tap the mouth center (${points.length}/3)`);
+            } else if (points.length === 3) {
+                avatarCanvas.removeEventListener('click', clickHandler);
+                updateStatus('Manual landmarks set - limited morphing enabled');
+                resolve(points);
+            }
+        };
+        
+        avatarCanvas.addEventListener('click', clickHandler);
+        avatarCanvas.style.cursor = 'crosshair';
+        
+        // Timeout after 30 seconds
+        setTimeout(() => {
+            if (points.length < 3) {
+                avatarCanvas.removeEventListener('click', clickHandler);
+                avatarCanvas.style.cursor = 'default';
+                updateStatus('Manual selection timed out - using basic animation');
+                resolve(null);
+            }
+        }, 30000);
+    });
+}
+
+/**
+ * Create synthetic 468-point landmark set from 3 manual points
+ * @param {Array} points - [leftEye, rightEye, mouth] points
+ * @returns {Array} Synthetic landmark array
+ */
+function createSyntheticLandmarks(points) {
+    const [leftEye, rightEye, mouth] = points;
+    
+    // Calculate face dimensions
+    const eyeDistance = Math.sqrt(
+        Math.pow(rightEye.x - leftEye.x, 2) + 
+        Math.pow(rightEye.y - leftEye.y, 2)
+    );
+    
+    const faceCenter = {
+        x: (leftEye.x + rightEye.x) / 2,
+        y: (leftEye.y + rightEye.y + mouth.y) / 3
+    };
+    
+    // Generate basic landmark structure
+    const landmarks = new Array(468);
+    
+    // Key landmarks
+    landmarks[1] = { x: faceCenter.x, y: faceCenter.y - eyeDistance * 0.3, z: 0 }; // nose tip
+    landmarks[33] = leftEye; // left eye
+    landmarks[263] = rightEye; // right eye  
+    landmarks[13] = { x: mouth.x, y: mouth.y - 5, z: 0 }; // upper lip
+    landmarks[14] = { x: mouth.x, y: mouth.y + 5, z: 0 }; // lower lip
+    
+    // Fill remaining landmarks with interpolated positions
+    for (let i = 0; i < 468; i++) {
+        if (!landmarks[i]) {
+            // Simple interpolation based on key points
+            const angle = (i / 468) * 2 * Math.PI;
+            const radius = eyeDistance * (0.3 + Math.random() * 0.4);
+            
+            landmarks[i] = {
+                x: faceCenter.x + Math.cos(angle) * radius,
+                y: faceCenter.y + Math.sin(angle) * radius * 0.8,
+                z: Math.random() * 0.02 - 0.01
+            };
+        }
+    }
+    
+    console.log('[spromoji] ✅ Created synthetic landmarks from manual points');
+    return landmarks;
+}
+
+/**
+ * Initialize webcam preview
  */
 async function initPreview() {
     if (previewRunning) {
-        console.log('[morph] Preview already running');
+        console.log('[spromoji] Preview already running');
         return;
     }
     
-    console.log('[morph] Initializing webcam and face tracking...');
+    console.log('[spromoji] Starting webcam...');
+    updateStatus('Starting camera...');
     previewRunning = true;
     
     try {
-        // Get webcam stream
         const stream = await navigator.mediaDevices.getUserMedia({
             video: {
                 width: { ideal: 640 },
@@ -232,39 +471,13 @@ async function initPreview() {
         });
         
         cam.srcObject = stream;
-        console.log('[morph] Webcam started');
-        
-        // Wait for MediaPipe to be available
-        await waitForMediaPipe();
-        
-        // Initialize face mesh
-        faceMesh = new FaceMesh({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
-        });
-        
-        faceMesh.setOptions({
-            maxNumFaces: 1,
-            refineLandmarks: true,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        });
-        
-        faceMesh.onResults(onFaceResults);
-        
-        // If avatar wasn't analyzed yet, do it now that MediaPipe is ready
-        if (avatarImg && !avatarLandmarks) {
-            console.log('[morph] MediaPipe ready, analyzing avatar now...');
-            const analysisSuccess = await analyzeAvatarFace();
-            if (!analysisSuccess) {
-                console.log('[morph] Avatar analysis failed, continuing with basic mode');
-            }
-        }
+        console.log('[spromoji] ✅ Webcam started');
         
         // Initialize camera processing
         camera = new Camera(cam, {
             onFrame: async () => {
-                if (faceMesh) {
-                    await faceMesh.send({ image: cam });
+                if (liveMesh) {
+                    await liveMesh.send({ image: cam });
                 }
             },
             width: 640,
@@ -272,47 +485,36 @@ async function initPreview() {
         });
         
         await camera.start();
-        console.log('[morph] Face tracking started');
-        updateStatus(morphingEnabled ? 
-            'Facial morphing active - move your face!' : 
-            'Basic animation active - no morphing available');
+        
+        const statusMsg = manualLandmarks 
+            ? 'Manual landmarks - limited morphing active'
+            : morphingEnabled 
+                ? 'Full facial morphing active!'
+                : 'Basic animation active - no morphing available';
+                
+        updateStatus(statusMsg);
         hideLoading();
         
+        console.log('[spromoji] ✅ Face tracking active');
+        
     } catch (error) {
-        console.error('[morph] Failed to initialize:', error);
-        updateStatus('Camera access denied or face tracking unavailable');
+        console.error('[spromoji] Camera initialization failed:', error);
+        updateStatus('Camera access denied');
         hideLoading();
         previewRunning = false;
     }
 }
 
 /**
- * Wait for MediaPipe scripts to load
- */
-function waitForMediaPipe() {
-    return new Promise((resolve) => {
-        const checkLoaded = () => {
-            if (window.FaceMesh && window.Camera) {
-                console.log('[morph] MediaPipe loaded');
-                resolve();
-            } else {
-                setTimeout(checkLoaded, 100);
-            }
-        };
-        checkLoaded();
-    });
-}
-
-/**
- * P1: Handle face detection results with real-time morphing
+ * Handle live face detection results
  * @param {Object} results - MediaPipe face mesh results
  */
-function onFaceResults(results) {
+function onLiveFaceResults(results) {
     if (!avatarImg || !results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
         return;
     }
     
-    // Performance throttling - target 30 FPS max
+    // Performance throttling
     const now = performance.now();
     if (now - lastFrameTime < 33) return; // ~30 FPS
     lastFrameTime = now;
@@ -327,18 +529,16 @@ function onFaceResults(results) {
     }));
     
     if (morphingEnabled && avatarLandmarks && avatarTriangulation && window.FacialMorph) {
-        // P1: Real-time facial morphing
         morphAvatarFace(scaledUserLandmarks);
     } else {
-        // Fallback: Basic rotation and simple effects
         fallbackAnimation(scaledUserLandmarks);
     }
     
-    // Performance monitoring
+    // Performance logging
     frameCount++;
-    if (frameCount % 30 === 0) {
+    if (frameCount % 90 === 0) {
         const fps = 1000 / (now - lastFrameTime);
-        console.debug(`[morph] Rendering FPS: ${fps.toFixed(1)}`);
+        console.debug(`[spromoji] Live FPS: ${fps.toFixed(1)}`);
     }
 }
 
@@ -556,71 +756,23 @@ function hideLoading() {
 }
 
 /**
- * Initialize the application
+ * Wait for MediaPipe scripts to load
  */
-async function initializeApp() {
-    console.log('[morph] Initializing facial morphing system...');
-    
-    // Failsafe: ensure loading indicator is hidden after 10 seconds max
-    setTimeout(() => {
-        if (loadingIndicator && loadingIndicator.style.display !== 'none') {
-            console.warn('[morph] Forcing loading indicator to hide after timeout');
-            hideLoading();
-            if (!avatarImg) {
-                updateStatus('Please upload an avatar image to begin.');
-            } else if (!morphingEnabled) {
-                updateStatus('Basic animation mode active');
+function waitForMediaPipe() {
+    return new Promise((resolve) => {
+        const checkLoaded = () => {
+            if (window.FaceMesh && window.Camera) {
+                console.log('[morph] MediaPipe loaded');
+                resolve();
+            } else {
+                setTimeout(checkLoaded, 100);
             }
-        }
-    }, 10000);
-    
-    // Check for avatar URL parameter
-    const urlParams = new URLSearchParams(window.location.search);
-    const avatarUrl = urlParams.get('avatar');
-    
-    if (avatarUrl) {
-        console.log('[morph] Found avatar URL parameter:', avatarUrl);
-        try {
-            const decodedUrl = decodeURIComponent(avatarUrl);
-            await loadAvatar(decodedUrl);
-        } catch (error) {
-            console.error('[morph] Failed to load avatar from URL:', error);
-            updateStatus('Failed to load avatar. Please upload an image.');
-            hideLoading();
-        }
-    } else {
-        console.log('[morph] No avatar URL found');
-        updateStatus('Please upload an avatar image to begin.');
-        hideLoading();
-    }
+        };
+        checkLoaded();
+    });
 }
 
-// Event listeners
-startBtn.addEventListener('click', startRecording);
-
-avatarInput.addEventListener('change', async (event) => {
-    const file = event.target.files[0];
-    if (file) {
-        console.log('[morph] Processing uploaded file:', file.name);
-        const url = URL.createObjectURL(file);
-        try {
-            await loadAvatar(url);
-            updateStatus('Avatar uploaded! Facial analysis complete.');
-        } catch (error) {
-            console.error('[morph] Failed to load uploaded image:', error);
-            updateStatus('Failed to load uploaded image.');
-        }
-    }
-});
-
-// Global error handling
-window.addEventListener('error', (event) => {
-    console.error('[morph] Global error:', event.error);
-    updateStatus('An error occurred. Falling back to basic mode.');
-    morphingEnabled = false; // Disable morphing on critical errors
-});
-
-// Initialize when DOM is ready
+// Initialize the application when DOM is ready
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initializeApp);
 } else {

@@ -112,8 +112,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             file_cache[file.file_unique_id] = file.file_path
             print(f"Debug - Cached file path for {file.file_unique_id}")
             
-            # Use our proxy URL instead of direct Telegram URL
-            avatar_url = f"/avatar/{file.file_unique_id}.jpg"
+            # Use our proxy URL with cache-buster timestamp
+            import time
+            avatar_url = f"/avatar/{file.file_unique_id}.jpg?t={int(time.time())}"
             print(f"Debug - Proxy avatar_url: {avatar_url}")
             
     except Exception as e:
