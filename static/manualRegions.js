@@ -318,6 +318,11 @@ function resetSelection() {
 }
 
 function completeSelection() {
+    // Hide debug rectangles after selection complete
+    if (selectionState.debugCanvas) {
+        selectionState.debugCanvas.style.display = 'none';
+    }
+    
     cleanup();
     
     // Convert regions to include center points for compatibility

@@ -191,7 +191,10 @@ function handleFileUpload(event) {
     const file = event.target.files[0];
     if (file) {
         const url = URL.createObjectURL(file);
-        loadAvatar(url);
+        loadAvatar(url).then(() => {
+            // Always force manual selection for uploads
+            startManualSelection();
+        });
     }
 }
 
@@ -265,10 +268,18 @@ async function tryAutoDetection() {
                 avatarLandmarks = landmarks;
                 drawDebugPoints(landmarks);
                 
-                // Auto-detection successful but region extraction not implemented yet
-                // For now, show the detected landmarks and suggest manual selection
-                updateStatus('✅ Face detected! Use manual selection for animation.');
-                return false; // Still return false to suggest manual selection
+                // Convert landmarks to regions using AutoRegions helper
+                avatarRegions = window.AutoRegions(avatarLandmarks, avatarCanvas.width, avatarCanvas.height);
+                window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
+                animationEnabled = true;
+                manualLandmarks = false;
+                
+                // Hide debug canvas
+                debugCanvas.style.display = 'none';
+                
+                console.log('[spromoji] ✅ Auto-detected features:', Object.keys(avatarRegions));
+                updateStatus('✅ Auto-detected features – try blinking & talking!');
+                return true;
             }
             
             console.warn('[spromoji] ❌ Avatar detection failed at', maxSize, 'px');
@@ -795,6 +806,9 @@ function onLiveFaceResults(results) {
     
     // Use region-based animation if available
     if (animationEnabled && avatarRegions) {
+        // Clear debug canvas during animation
+        debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+        
         // Use the new RegionAnimator system
         window.RegionAnimator.animate(ctx, scaledUserLandmarks);
         

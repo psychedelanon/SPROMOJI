@@ -1,6 +1,7 @@
 (function () {
   const BLINK_THRESHOLD = 0.2;   // EAR below this → eye closed
-  const MOUTH_OPEN_THR  = 0.65;  // openness above this → mouth open
+  const MOUTH_OPEN_THR  = 0.35;  // openness above this → mouth open (Pepe mouths often small)
+  const DEBUG_MOUTH = false;
 
   let r = null;  // cached regions + images
 
@@ -23,9 +24,10 @@
     return Math.atan2(dy, dx);
   }
 
+  // Use outer-lip pair 12 / 15 (upper/lower) – gives bigger delta
   function computeMouthOpenness(lm) {
-    const v = Math.hypot(lm[13].x - lm[14].x, lm[13].y - lm[14].y);
-    const h = Math.hypot(lm[78].x - lm[308].x, lm[78].y - lm[308].y); // mouth width
+    const v = Math.hypot(lm[12].x - lm[15].x, lm[12].y - lm[15].y);
+    const h = Math.hypot(lm[61].x - lm[291].x, lm[61].y - lm[291].y);  // mouth width
     return v / h;
   }
 
@@ -52,6 +54,8 @@
       const earL   = computeEAR(lm, 159, 145, 33, 133);
       const earR   = computeEAR(lm, 386, 374, 362, 263);
       const mouthO = computeMouthOpenness(lm);
+      
+      if (DEBUG_MOUTH) console.debug('mouth ratio', mouthO.toFixed(2));
 
       // 1. base avatar (optionally with slight tilt)
       ctx.save();
