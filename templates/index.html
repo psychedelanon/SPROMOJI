@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Spromoji WebApp</title>
     <link rel="stylesheet" href="/static/style.css" />
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <!-- MediaPipe Face Landmarker (v0.10.0) -->
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/vision_bundle.mjs"></script>
     <script src="/static/manualRegions.js"></script>
+    <script src="/static/autoRegions.js"></script>
 </head>
 <body>
     <div class="container">
@@ -19,11 +20,13 @@
                 📸 Choose Avatar Image
             </label>
             <input type="file" id="avatarInput" accept="image/*" />
+            
+
+            
             <button id="manualModeBtn" class="manual-mode-btn" style="display: none;">
-                🎯 Use Manual Selection
+                🎯 Adjust features
             </button>
-            <p class="help-text">Upload an image or use your Telegram profile photo<br>
-            <small>Use manual selection for cartoon avatars or if auto-detection fails</small></p>
+            <p class="help-text">Upload an image or use your Telegram profile photo</p>
         </div>
         
         <div id="stage">
@@ -45,10 +48,9 @@
     </div>
 
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="/static/mediapipeTri.js"></script>
-    <script src="/static/manualLandmark.js"></script>
-    <script src="/static/warp.js"></script>
-    <script src="/static/autoRegions.js"></script>
+    <!-- Cartoon template fallback -->
+    <script src="/static/cartoonTemplate.js"></script>
+    <script src="/static/aiDriver.js"></script>
     <script src="/static/regionAnimator.js"></script>
     <script src="/static/script.js"></script>
 </body>

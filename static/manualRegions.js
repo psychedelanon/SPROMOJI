@@ -335,6 +335,10 @@ function completeSelection() {
         };
     }
     
+    RegionAnimator.init(selectionState.ctx, processedRegions, selectionState.avatarImg);
+    avatarRegions = processedRegions;
+    animationReady = true;
+    log('manual regions set');
     selectionState.onComplete(processedRegions);
 }
 
@@ -359,5 +363,10 @@ function cleanup() {
 
 // Export the main function
 window.ManualRegions = {
-    selectFeatureRegions
+    selectFeatureRegions,
+    toggleDebug: (show) => {
+        if (selectionState.debugCanvas) {
+            selectionState.debugCanvas.style.display = show ? 'block' : 'none';
+        }
+    }
 }; 

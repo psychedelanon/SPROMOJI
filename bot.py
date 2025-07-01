@@ -40,6 +40,14 @@ def run_async(coro):
         asyncio.run(coro)
 
 
+@app.after_request
+def ensure_js_mime(response):
+    """Ensure JavaScript files have correct MIME type for ES modules."""
+    if request.path.endswith('.js'):
+        response.mimetype = 'text/javascript'
+    return response
+
+
 @app.route("/")
 def index():
     """Serve the WebApp's main page."""
@@ -97,41 +105,48 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a button that opens the WebApp with the user's profile photo."""
 
     avatar_url = None
+    user_id = update.effective_user.id
+    
     try:
         # Get the most recent profile photo (limit=1 gets the newest)
-        photos = await context.bot.get_user_profile_photos(update.effective_user.id, limit=1, offset=0)
-        if photos.total_count:
+        photos = await context.bot.get_user_profile_photos(user_id, limit=1, offset=0)
+        if photos.total_count > 0:
             # Get the highest resolution version of the most recent photo
             file_id = photos.photos[0][-1].file_id  # -1 gets highest resolution
             file = await context.bot.get_file(file_id)
             
-            print(f"Debug - file.file_path: {file.file_path}")
-            print(f"Debug - file.file_unique_id: {file.file_unique_id}")
+            print(f"Profile photo found for user {user_id}: {file.file_unique_id}")
             
-            # Cache the file path for the proxy route
+            # Cache the file path for the proxy route - always update to latest
             file_cache[file.file_unique_id] = file.file_path
-            print(f"Debug - Cached file path for {file.file_unique_id}")
             
-            # Use our proxy URL with cache-buster timestamp
+            # Use our proxy URL with cache-buster timestamp to ensure fresh image
             import time
             avatar_url = f"/avatar/{file.file_unique_id}.jpg?t={int(time.time())}"
-            print(f"Debug - Proxy avatar_url: {avatar_url}")
+            print(f"Avatar URL generated: {avatar_url}")
+        else:
+            print(f"No profile photos found for user {user_id}")
             
     except Exception as e:
-        print(f"Failed to fetch profile photo: {e}")
+        print(f"Error fetching profile photo for user {user_id}: {e}")
 
+    # Build WebApp URL
     url = WEB_APP_URL
     if avatar_url:
         encoded = urllib.parse.quote_plus(avatar_url)
         separator = '&' if '?' in url else '?'
         url = f"{url}{separator}avatar={encoded}"
 
-    keyboard = [[KeyboardButton("Open Spromoji", web_app=WebAppInfo(url=url))]]
+    keyboard = [[KeyboardButton("🚀 Open Spromoji", web_app=WebAppInfo(url=url))]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        "Welcome! Tap the button below to launch Spromoji.",
-        reply_markup=reply_markup,
-    )
+    
+    welcome_text = "🎭 Welcome to Spromoji!\n\nMirror your expressions with your avatar in real-time."
+    if avatar_url:
+        welcome_text += "\n\n✅ Your Telegram profile photo will be loaded automatically."
+    else:
+        welcome_text += "\n\n📸 You can upload any image as your avatar."
+    
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 
 application.add_handler(CommandHandler("start", start))

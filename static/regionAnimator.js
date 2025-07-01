@@ -4,6 +4,14 @@
   const DEBUG_MOUTH = false;
 
   let r = null;  // cached regions + images
+  
+  // AI-driven animation state
+  let animState = {
+    eyeScaleLeft: 1.0,
+    eyeScaleRight: 1.0, 
+    mouthScale: 1.0,
+    globalTilt: 0.0
+  };
 
   function cropRegion(img, reg) {
     const c = document.createElement('canvas');
@@ -26,7 +34,7 @@
 
   // Use outer-lip pair 12 / 15 (upper/lower) – gives bigger delta
   function computeMouthOpenness(lm) {
-    const v = Math.hypot(lm[12].x - lm[15].x, lm[12].y - lm[15].y);
+    const v = Math.hypot(lm[12].x - lm[15].x, lm[12].y - lm[15].y);  // outer lips
     const h = Math.hypot(lm[61].x - lm[291].x, lm[61].y - lm[291].y);  // mouth width
     return v / h;
   }
@@ -43,28 +51,52 @@
         canvasW: ctx.canvas.width,
         canvasH: ctx.canvas.height
       };
+      
       console.debug('[RegionAnimator] init OK', r);
     },
 
-    /** draw one frame */
-    animate(ctx, lm) {
+    /** AI-driven setters */
+    setEyeScaleY(val, right = false) {
+      if (right) {
+        animState.eyeScaleRight = Math.max(0.1, Math.min(val, 1.0));
+      } else {
+        animState.eyeScaleLeft = Math.max(0.1, Math.min(val, 1.0));
+      }
+    },
+    
+    setMouthScale(val) {
+      animState.mouthScale = Math.max(1.0, Math.min(val, 1.3));
+    },
+    
+    setGlobalTilt(rad) {
+      animState.globalTilt = Math.max(-Math.PI/8, Math.min(rad, Math.PI/8));
+    },
+    
+    /** Reset animation state */
+    reset() {
+      animState.eyeScaleLeft = 1.0;
+      animState.eyeScaleRight = 1.0;
+      animState.mouthScale = 1.0;
+      animState.globalTilt = 0.0;
+      r = null;
+      console.debug('[RegionAnimator] State reset');
+    },
+
+    /** draw one frame using stored animation state - optimized for smoothness */
+    animate(ctx) {
       if (!r) return;
 
-      const roll   = computeRoll(lm);
-      const earL   = computeEAR(lm, 159, 145, 33, 133);
-      const earR   = computeEAR(lm, 386, 374, 362, 263);
-      const mouthO = computeMouthOpenness(lm);
-      
-      if (DEBUG_MOUTH) console.debug('mouth ratio', mouthO.toFixed(2));
-
-      // 1. base avatar (optionally with slight tilt)
+      // 1. base avatar with global tilt - smooth drawing
       ctx.save();
-      ctx.clearRect(0,0,r.canvasW,r.canvasH);
+      ctx.clearRect(0, 0, r.canvasW, r.canvasH);
       ctx.translate(r.canvasW/2, r.canvasH/2);
-      ctx.rotate(roll * 0.3);              // mild global tilt
+      ctx.rotate(animState.globalTilt * 0.3);    // use stored tilt
       ctx.translate(-r.canvasW/2, -r.canvasH/2);
       ctx.drawImage(r.baseImg, 0, 0, r.canvasW, r.canvasH);
       ctx.restore();
+      
+      // Theme effects should be UI-only, not overlaid on avatar
+      // Removed viral effects overlay to keep avatar clean
 
       // draw helpers
       ctx.imageSmoothingEnabled = true;
@@ -73,14 +105,12 @@
       ctx.save();
       const le = r.regs.leftEye;
       ctx.translate(le.x + le.w/2, le.y + le.h/2);
-
-      // tiny parallax shift with roll
-      ctx.translate( roll * 5, 0 );
-
-      // blink squash
-      const blinkScale = Math.max(earL / BLINK_THRESHOLD, 0.1); // 0.1→1
-      ctx.scale(1, Math.min(blinkScale,1));
-
+      
+      // tiny parallax shift with tilt
+      ctx.translate(animState.globalTilt * 5, 0);
+      
+      // use stored eye scale
+      ctx.scale(1, animState.eyeScaleLeft);
       ctx.drawImage(r.leftEyeImg, -le.w/2, -le.h/2, le.w, le.h);
       ctx.restore();
 
@@ -88,9 +118,8 @@
       ctx.save();
       const re = r.regs.rightEye;
       ctx.translate(re.x + re.w/2, re.y + re.h/2);
-      ctx.translate( roll * -5, 0 );
-      const blinkScaleR = Math.max(earR / BLINK_THRESHOLD, 0.1);
-      ctx.scale(1, Math.min(blinkScaleR,1));
+      ctx.translate(animState.globalTilt * -5, 0);
+      ctx.scale(1, animState.eyeScaleRight);
       ctx.drawImage(r.rightEyeImg, -re.w/2, -re.h/2, re.w, re.h);
       ctx.restore();
 
@@ -98,10 +127,11 @@
       ctx.save();
       const mo = r.regs.mouth;
       ctx.translate(mo.x + mo.w/2, mo.y + mo.h/2);
-      // drop mouth slightly when open
-      const openF = Math.min(Math.max((mouthO - MOUTH_OPEN_THR) * 4, 0), 1); // 0→1
-      ctx.translate(0, openF * mo.h * 0.15);       // drop 15 % of h
-      ctx.scale(1, 1 + openF * 0.25);              // up to 25 % taller
+      
+      // use stored mouth scale
+      const mouthOpenF = (animState.mouthScale - 1.0) / 0.3; // 0→1
+      ctx.translate(0, mouthOpenF * mo.h * 0.15);   // drop when open
+      ctx.scale(1, animState.mouthScale);           // scale up
       ctx.drawImage(r.mouthImg, -mo.w/2, -mo.h/2, mo.w, mo.h);
       ctx.restore();
     }
