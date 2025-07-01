@@ -265,21 +265,10 @@ async function tryAutoDetection() {
                 avatarLandmarks = landmarks;
                 drawDebugPoints(landmarks);
                 
-                // Extract feature regions from landmarks
-                if (window.RegionAnimator) {
-                    try {
-                        avatarRegions = window.RegionAnimator.getFeatureRegionRects(avatarLandmarks);
-                        if (avatarRegions && Object.keys(avatarRegions).length > 0) {
-                            animationEnabled = true;
-                            manualLandmarks = false;
-                            console.log('[spromoji] ✅ Feature regions extracted:', Object.keys(avatarRegions));
-                            updateStatus('✅ Auto-detected features - ready to animate!');
-                            return true;
-                        }
-                    } catch (regionError) {
-                        console.error('[spromoji] ❌ Region extraction failed:', regionError);
-                    }
-                }
+                // Auto-detection successful but region extraction not implemented yet
+                // For now, show the detected landmarks and suggest manual selection
+                updateStatus('✅ Face detected! Use manual selection for animation.');
+                return false; // Still return false to suggest manual selection
             }
             
             console.warn('[spromoji] ❌ Avatar detection failed at', maxSize, 'px');
@@ -383,6 +372,9 @@ async function startManualSelection() {
         
         // Store regions for animation
         avatarRegions = regions;
+        
+        // Initialize RegionAnimator with the selected regions
+        window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
         animationEnabled = true;
         manualLandmarks = true;
         
@@ -802,15 +794,9 @@ function onLiveFaceResults(results) {
     }));
     
     // Use region-based animation if available
-    if (animationEnabled && avatarRegions && window.RegionAnimator) {
-        // Use the new region-based animation system
-        window.RegionAnimator.animateFeatureRegions(
-            ctx, // Use avatar canvas context as both source and destination
-            ctx,
-            avatarRegions,
-            scaledUserLandmarks,
-            avatarImg
-        );
+    if (animationEnabled && avatarRegions) {
+        // Use the new RegionAnimator system
+        window.RegionAnimator.animate(ctx, scaledUserLandmarks);
         
         // Status update occasionally
         if (frameCount % 180 === 0) {
