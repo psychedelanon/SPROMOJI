@@ -1,5 +1,5 @@
 (function () {
-  const BLINK_THRESHOLD = 0.2;   // EAR below this → eye closed
+  const BLINK_THRESHOLD = 0.17;  // EAR below this → eye closed
   const MOUTH_OPEN_THR  = 0.35;  // openness above this → mouth open (Pepe mouths often small)
   const DEBUG_MOUTH = false;
 
@@ -22,6 +22,15 @@
     const dy = lm[263].y - lm[33].y;
     const dx = lm[263].x - lm[33].x;
     return Math.atan2(dy, dx);
+  }
+
+  function computeYaw(lm) {
+    const left = lm[33];
+    const right = lm[263];
+    const nose = lm[1];
+    const cx = (left.x + right.x) / 2;
+    const w = right.x - left.x;
+    return (nose.x - cx) / w;
   }
 
   // Use outer-lip pair 12 / 15 (upper/lower) – gives bigger delta
@@ -51,6 +60,7 @@
       if (!r) return;
 
       const roll   = computeRoll(lm);
+      const yaw    = computeYaw(lm);
       const earL   = computeEAR(lm, 159, 145, 33, 133);
       const earR   = computeEAR(lm, 386, 374, 362, 263);
       const mouthO = computeMouthOpenness(lm);
@@ -61,7 +71,8 @@
       ctx.save();
       ctx.clearRect(0,0,r.canvasW,r.canvasH);
       ctx.translate(r.canvasW/2, r.canvasH/2);
-      ctx.rotate(roll * 0.3);              // mild global tilt
+      ctx.rotate(roll * 0.3 + yaw * 0.2);
+      ctx.translate((Math.random()-0.5)*2, (Math.random()-0.5)*2);
       ctx.translate(-r.canvasW/2, -r.canvasH/2);
       ctx.drawImage(r.baseImg, 0, 0, r.canvasW, r.canvasH);
       ctx.restore();
@@ -77,11 +88,10 @@
       // tiny parallax shift with roll
       ctx.translate( roll * 5, 0 );
 
-      // blink squash
-      const blinkScale = Math.max(earL / BLINK_THRESHOLD, 0.1); // 0.1→1
-      ctx.scale(1, Math.min(blinkScale,1));
-
+      const blinkL = earL < BLINK_THRESHOLD ? 0 : 1;
+      ctx.globalAlpha = blinkL;
       ctx.drawImage(r.leftEyeImg, -le.w/2, -le.h/2, le.w, le.h);
+      ctx.globalAlpha = 1;
       ctx.restore();
 
       /********* RIGHT EYE *********/
@@ -89,9 +99,10 @@
       const re = r.regs.rightEye;
       ctx.translate(re.x + re.w/2, re.y + re.h/2);
       ctx.translate( roll * -5, 0 );
-      const blinkScaleR = Math.max(earR / BLINK_THRESHOLD, 0.1);
-      ctx.scale(1, Math.min(blinkScaleR,1));
+      const blinkR = earR < BLINK_THRESHOLD ? 0 : 1;
+      ctx.globalAlpha = blinkR;
       ctx.drawImage(r.rightEyeImg, -re.w/2, -re.h/2, re.w, re.h);
+      ctx.globalAlpha = 1;
       ctx.restore();
 
       /********* MOUTH *********/

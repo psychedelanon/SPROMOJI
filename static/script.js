@@ -20,10 +20,12 @@ let previewRunning = false;
 let animationEnabled = false;   // P1: Region-based animation flag
 let manualLandmarks = false;
 let debugMode = false;         // Debug overlay mode
+let currentAvatarURL = null;   // object URL for uploaded avatar
 
 // Performance monitoring
 let lastFrameTime = 0;
 let frameCount = 0;
+let lastLogTime = 0;
 
 // Create off-screen canvas for avatar processing
 let avatarSrcCanvas = null;
@@ -83,7 +85,7 @@ async function initializeApp() {
     
     // Set up event listeners
     if (avatarInput) {
-        avatarInput.addEventListener('change', handleFileUpload);
+        avatarInput.addEventListener('change', handleAvatarUpload);
     }
     
     if (manualModeBtn) {
@@ -104,6 +106,7 @@ async function initializeApp() {
         await loadAvatar(avatarParam);
     } else {
         updateStatus('Upload an avatar image to begin');
+        if (manualModeBtn) manualModeBtn.style.display = 'none';
         hideLoading();
     }
 }
@@ -156,10 +159,6 @@ async function loadAvatar(src) {
         
         console.log('[spromoji] Canvas dimensions set:', avatarCanvas.width, 'x', avatarCanvas.height);
         
-        // Show manual mode button
-        if (manualModeBtn) {
-            manualModeBtn.style.display = 'inline-block';
-        }
         
         // Initialize MediaPipe and try auto-detection (but make it optional)
         await initializeMediaPipe();
@@ -168,11 +167,9 @@ async function loadAvatar(src) {
         const autoSuccess = await tryAutoDetection();
         
         if (!autoSuccess) {
-            // Auto-detection failed - show option to go manual
             updateStatus('Auto-detection failed. Use manual selection or try uploading a clearer photo.');
             console.log('[spromoji] Auto-detection failed, manual mode available');
-            
-            // Start webcam preview only if auto-detection failed
+            if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
             await initPreview();
         }
         // If auto-detection succeeded, initPreview() was already called
@@ -188,12 +185,17 @@ async function loadAvatar(src) {
  * Handle file upload from input
  * @param {Event} event - File input change event
  */
-function handleFileUpload(event) {
+function handleAvatarUpload(event) {
     const file = event.target.files[0];
     if (file) {
-        const url = URL.createObjectURL(file);
-        loadAvatar(url).then(async () => {
-            // Only start manual selection if auto-detection didn't work
+        if (currentAvatarURL) URL.revokeObjectURL(currentAvatarURL);
+        currentAvatarURL = URL.createObjectURL(file);
+        animationEnabled = false;
+        avatarRegions = null;
+        stopCamera();
+        updateStatus('Using uploaded image');
+        if (manualModeBtn) manualModeBtn.style.display = 'none';
+        loadAvatar(currentAvatarURL).then(async () => {
             if (!animationEnabled) {
                 await startManualSelection();
             }
@@ -205,6 +207,10 @@ function handleFileUpload(event) {
  * Initialize MediaPipe face mesh instances
  */
 async function initializeMediaPipe() {
+    if (avatarMesh && liveMesh) {
+        console.log('[spromoji] MediaPipe already initialized');
+        return;
+    }
     updateStatus('🔧 Debug: Initializing MediaPipe...');
     
     try {
@@ -255,11 +261,31 @@ async function initializeMediaPipe() {
 async function tryAutoDetection() {
     console.log('[spromoji] Starting avatar facial analysis...');
     updateStatus('Detecting facial landmarks...');
-    
+
     // Clear debug overlay
     debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
-    
+
     try {
+        // First attempt cartoon-style detection using simple image analysis
+        const cartoonRegions = window.AutoRegions.detectCartoon(avatarCanvas);
+        if (cartoonRegions) {
+            console.log('[spromoji] 🎨 Cartoon detection succeeded');
+            avatarRegions = cartoonRegions;
+            Object.values(avatarRegions).forEach(r => {
+                r.w = Math.max(r.w, 20);
+                r.h = Math.max(r.h, 20);
+            });
+            console.table(avatarRegions);
+            window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
+            animationEnabled = true;
+            manualLandmarks = false;
+            debugCanvas.style.display = 'none';
+            updateStatus('✅ Auto-detected features – try blinking & talking!');
+            await initPreview();
+            return true;
+        }
+
+        // Try MediaPipe-based detection as fallback
         // Try multiple sizes for better detection
         for (const maxSize of [512, 256]) {
             console.log('[spromoji] Attempting detection at max size:', maxSize);
@@ -273,6 +299,11 @@ async function tryAutoDetection() {
                 
                 // Convert landmarks to regions using AutoRegions helper
                 avatarRegions = window.AutoRegions(avatarLandmarks, avatarCanvas.width, avatarCanvas.height);
+                Object.values(avatarRegions).forEach(r => {
+                    r.w = Math.max(r.w, 20);
+                    r.h = Math.max(r.h, 20);
+                });
+                console.table(avatarRegions);
                 window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
                 animationEnabled = true;
                 manualLandmarks = false;
@@ -295,12 +326,14 @@ async function tryAutoDetection() {
         console.warn('[spromoji] ❌ Automatic detection failed');
         animationEnabled = false;
         updateStatus('❌ Auto-detection failed - please select features manually');
+        if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
         return false;
         
     } catch (error) {
         console.error('[spromoji] Avatar analysis error:', error);
         animationEnabled = false;
         updateStatus('❌ Detection error - please select features manually');
+        if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
         return false;
     }
 }
@@ -389,7 +422,12 @@ async function startManualSelection() {
         
         // Store regions for animation
         avatarRegions = regions;
-        
+        Object.values(avatarRegions).forEach(r => {
+            r.w = Math.max(r.w, 20);
+            r.h = Math.max(r.h, 20);
+        });
+        console.table(avatarRegions);
+
         // Initialize RegionAnimator with the selected regions
         window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
         animationEnabled = true;
@@ -800,6 +838,10 @@ function onLiveFaceResults(results) {
     const now = performance.now();
     if (now - lastFrameTime < 33) return; // ~30 FPS
     lastFrameTime = now;
+    if (now - lastLogTime > 1000) {
+        console.log({animationEnabled, hasRegions: !!avatarRegions});
+        lastLogTime = now;
+    }
     
     const userLandmarks = results.multiFaceLandmarks[0];
     
@@ -1082,8 +1124,9 @@ function startRecording() {
     
     // Create MediaRecorder from canvas stream
     const stream = avatarCanvas.captureStream(30);
-    const recorder = new MediaRecorder(stream, { 
-        mimeType: 'video/webm;codecs=vp9' 
+    const recorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp9',
+        videoBitsPerSecond: 300000
     });
     
     const chunks = [];
@@ -1135,6 +1178,13 @@ function startRecording() {
         });
         
         startBtn.parentNode.appendChild(downloadLink);
+
+        const shareLink = document.createElement('a');
+        shareLink.href = `tg://share?url=${encodeURIComponent(url)}`;
+        shareLink.textContent = '📤 Share to Telegram';
+        shareLink.className = 'download-link';
+        shareLink.style.cssText = downloadLink.style.cssText;
+        startBtn.parentNode.appendChild(shareLink);
         
         // Reset recording state
         isRecording = false;
@@ -1173,6 +1223,24 @@ function hideLoading() {
     if (loadingIndicator) {
         loadingIndicator.style.display = 'none';
     }
+}
+
+/**
+ * Stop webcam and MediaPipe processing
+ */
+function stopCamera() {
+    if (camera) {
+        if (camera.video && camera.video.srcObject) {
+            camera.video.srcObject.getTracks().forEach(t => t.stop());
+        }
+        if (camera.stop) camera.stop();
+        camera = null;
+    }
+    if (cam && cam.srcObject) {
+        cam.srcObject.getTracks().forEach(t => t.stop());
+        cam.srcObject = null;
+    }
+    previewRunning = false;
 }
 
 /**
