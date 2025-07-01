@@ -83,7 +83,7 @@ async function initializeApp() {
     
     // Set up event listeners
     if (avatarInput) {
-        avatarInput.addEventListener('change', handleFileUpload);
+        avatarInput.addEventListener('change', handleAvatarUpload);
     }
     
     if (manualModeBtn) {
@@ -104,6 +104,7 @@ async function initializeApp() {
         await loadAvatar(avatarParam);
     } else {
         updateStatus('Upload an avatar image to begin');
+        if (manualModeBtn) manualModeBtn.style.display = 'none';
         hideLoading();
     }
 }
@@ -156,10 +157,6 @@ async function loadAvatar(src) {
         
         console.log('[spromoji] Canvas dimensions set:', avatarCanvas.width, 'x', avatarCanvas.height);
         
-        // Show manual mode button
-        if (manualModeBtn) {
-            manualModeBtn.style.display = 'inline-block';
-        }
         
         // Initialize MediaPipe and try auto-detection (but make it optional)
         await initializeMediaPipe();
@@ -168,11 +165,9 @@ async function loadAvatar(src) {
         const autoSuccess = await tryAutoDetection();
         
         if (!autoSuccess) {
-            // Auto-detection failed - show option to go manual
             updateStatus('Auto-detection failed. Use manual selection or try uploading a clearer photo.');
             console.log('[spromoji] Auto-detection failed, manual mode available');
-            
-            // Start webcam preview only if auto-detection failed
+            if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
             await initPreview();
         }
         // If auto-detection succeeded, initPreview() was already called
@@ -188,12 +183,13 @@ async function loadAvatar(src) {
  * Handle file upload from input
  * @param {Event} event - File input change event
  */
-function handleFileUpload(event) {
+function handleAvatarUpload(event) {
     const file = event.target.files[0];
     if (file) {
         const url = URL.createObjectURL(file);
+        updateStatus('Using uploaded image');
+        if (manualModeBtn) manualModeBtn.style.display = 'none';
         loadAvatar(url).then(async () => {
-            // Only start manual selection if auto-detection didn't work
             if (!animationEnabled) {
                 await startManualSelection();
             }
@@ -205,6 +201,10 @@ function handleFileUpload(event) {
  * Initialize MediaPipe face mesh instances
  */
 async function initializeMediaPipe() {
+    if (avatarMesh && liveMesh) {
+        console.log('[spromoji] MediaPipe already initialized');
+        return;
+    }
     updateStatus('🔧 Debug: Initializing MediaPipe...');
     
     try {
@@ -255,11 +255,26 @@ async function initializeMediaPipe() {
 async function tryAutoDetection() {
     console.log('[spromoji] Starting avatar facial analysis...');
     updateStatus('Detecting facial landmarks...');
-    
+
     // Clear debug overlay
     debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
-    
+
     try {
+        // First attempt cartoon-style detection using simple image analysis
+        const cartoonRegions = window.AutoRegions.detectCartoon(avatarCanvas);
+        if (cartoonRegions) {
+            console.log('[spromoji] 🎨 Cartoon detection succeeded');
+            avatarRegions = cartoonRegions;
+            window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
+            animationEnabled = true;
+            manualLandmarks = false;
+            debugCanvas.style.display = 'none';
+            updateStatus('✅ Auto-detected features – try blinking & talking!');
+            await initPreview();
+            return true;
+        }
+
+        // Try MediaPipe-based detection as fallback
         // Try multiple sizes for better detection
         for (const maxSize of [512, 256]) {
             console.log('[spromoji] Attempting detection at max size:', maxSize);
@@ -295,12 +310,14 @@ async function tryAutoDetection() {
         console.warn('[spromoji] ❌ Automatic detection failed');
         animationEnabled = false;
         updateStatus('❌ Auto-detection failed - please select features manually');
+        if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
         return false;
         
     } catch (error) {
         console.error('[spromoji] Avatar analysis error:', error);
         animationEnabled = false;
         updateStatus('❌ Detection error - please select features manually');
+        if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
         return false;
     }
 }
@@ -1082,8 +1099,9 @@ function startRecording() {
     
     // Create MediaRecorder from canvas stream
     const stream = avatarCanvas.captureStream(30);
-    const recorder = new MediaRecorder(stream, { 
-        mimeType: 'video/webm;codecs=vp9' 
+    const recorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp9',
+        videoBitsPerSecond: 300000
     });
     
     const chunks = [];
@@ -1135,6 +1153,13 @@ function startRecording() {
         });
         
         startBtn.parentNode.appendChild(downloadLink);
+
+        const shareLink = document.createElement('a');
+        shareLink.href = `tg://share?url=${encodeURIComponent(url)}`;
+        shareLink.textContent = '📤 Share to Telegram';
+        shareLink.className = 'download-link';
+        shareLink.style.cssText = downloadLink.style.cssText;
+        startBtn.parentNode.appendChild(shareLink);
         
         // Reset recording state
         isRecording = false;
