@@ -18,6 +18,9 @@ let lastFrameTime = 0;
 let frameCount = 0;
 let lastLogTime = 0;
 
+// Smoothing factor for landmark interpolation (0=no smoothing, 1=ignore new data)
+const LANDMARK_SMOOTHING = 0.6;
+
 const tg = window.Telegram?.WebApp;
 if (tg && tg.expand) tg.expand();
 
@@ -463,12 +466,14 @@ function startFaceTracking() {
                 if (results && results.faceLandmarks && results.faceLandmarks.length > 0) {
                     let landmarks = results.faceLandmarks[0];
 
-                    // Smooth landmark updates for fluid animation (PR #8)
+                    // Smooth landmark updates for fluid animation
                     if (prevLandmarks) {
+                        const a = LANDMARK_SMOOTHING;
+                        const b = 1 - a;
                         landmarks = landmarks.map((pt, idx) => ({
-                            x: pt.x * 0.6 + prevLandmarks[idx].x * 0.4,
-                            y: pt.y * 0.6 + prevLandmarks[idx].y * 0.4,
-                            z: pt.z * 0.6 + prevLandmarks[idx].z * 0.4
+                            x: pt.x * a + prevLandmarks[idx].x * b,
+                            y: pt.y * a + prevLandmarks[idx].y * b,
+                            z: pt.z * a + prevLandmarks[idx].z * b
                         }));
                     }
 
