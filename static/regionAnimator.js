@@ -2,6 +2,7 @@
   const BLINK_THRESHOLD = 0.17;  // EAR below this → eye closed
   const MOUTH_OPEN_THR  = 0.35;  // openness above this → mouth open (Pepe mouths often small)
   const SHAPE_SMOOTHING = 0.3;   // smoothing for eye/mouth shape scaling
+  const MOVE_SMOOTHING  = 0.4;   // smoothing for eye/mouth translation
   const DEBUG_MOUTH = false;
 
   let r = null;  // cached regions + images
@@ -9,13 +10,17 @@
   const LEFT_EYE_IDX  = [33, 133, 159, 145];
   const RIGHT_EYE_IDX = [362, 263, 386, 374];
   const MOUTH_IDX     = [61, 291, 13, 14];
+  const LEFT_IRIS_C   = 468;  // iris center indices from MediaPipe
+  const RIGHT_IRIS_C  = 473;
 
   let shapeBaseline = null;  // baseline feature sizes from first frame
+  let posBaseline = null;    // baseline feature centers for movement
   let shapeState = {
     leX: 1, leY: 1,
     reX: 1, reY: 1,
     mX: 1,  mY: 1
   };
+  let posState = { leX:0, leY:0, reX:0, reY:0, mX:0, mY:0 };
   
   // AI-driven animation state
   let animState = {
@@ -69,7 +74,11 @@
       if (p.y<minY) minY=p.y;
       if (p.y>maxY) maxY=p.y;
     });
-    return {w:maxX-minX, h:maxY-minY};
+    return {w:maxX-minX, h:maxY-minY, cx:(minX+maxX)/2, cy:(minY+maxY)/2};
+  }
+
+  function center(lm, idx){
+    return {x: lm[idx].x, y: lm[idx].y};
   }
 
   function updateShape(lm){
@@ -78,6 +87,11 @@
         le: bbox(lm, LEFT_EYE_IDX),
         re: bbox(lm, RIGHT_EYE_IDX),
         mo: bbox(lm, MOUTH_IDX)
+      };
+      posBaseline = {
+        le: center(lm, LEFT_IRIS_C),
+        re: center(lm, RIGHT_IRIS_C),
+        mo: {x: shapeBaseline.mo.cx, y: shapeBaseline.mo.cy}
       };
     }
 
@@ -101,6 +115,24 @@
     shapeState.reY = lerp(shapeState.reY, tReY, SHAPE_SMOOTHING);
     shapeState.mX  = lerp(shapeState.mX,  tMoX, SHAPE_SMOOTHING);
     shapeState.mY  = lerp(shapeState.mY,  tMoY, SHAPE_SMOOTHING);
+
+    const leC = center(lm, LEFT_IRIS_C);
+    const reC = center(lm, RIGHT_IRIS_C);
+    const moC = {x: moBox.cx, y: moBox.cy};
+
+    const lePX = clamp((leC.x - posBaseline.le.x) / shapeBaseline.le.w * 2, -1, 1);
+    const lePY = clamp((leC.y - posBaseline.le.y) / shapeBaseline.le.h * 2, -1, 1);
+    const rePX = clamp((reC.x - posBaseline.re.x) / shapeBaseline.re.w * 2, -1, 1);
+    const rePY = clamp((reC.y - posBaseline.re.y) / shapeBaseline.re.h * 2, -1, 1);
+    const moPX = clamp((moC.x - posBaseline.mo.x) / shapeBaseline.mo.w, -0.5, 0.5);
+    const moPY = clamp((moC.y - posBaseline.mo.y) / shapeBaseline.mo.h, -0.5, 0.5);
+
+    posState.leX = lerp(posState.leX, lePX, MOVE_SMOOTHING);
+    posState.leY = lerp(posState.leY, lePY, MOVE_SMOOTHING);
+    posState.reX = lerp(posState.reX, rePX, MOVE_SMOOTHING);
+    posState.reY = lerp(posState.reY, rePY, MOVE_SMOOTHING);
+    posState.mX  = lerp(posState.mX,  moPX, MOVE_SMOOTHING);
+    posState.mY  = lerp(posState.mY,  moPY, MOVE_SMOOTHING);
   }
 
   window.RegionAnimator = {
@@ -143,7 +175,9 @@
       animState.mouthScale = 1.0;
       animState.globalTilt = 0.0;
       shapeBaseline = null;
+      posBaseline = null;
       shapeState = { leX:1, leY:1, reX:1, reY:1, mX:1, mY:1 };
+      posState = { leX:0, leY:0, reX:0, reY:0, mX:0, mY:0 };
       r = null;
       console.debug('[RegionAnimator] State reset');
     },
@@ -200,6 +234,7 @@
       if (landmarks) {
         // Real-time mode: use computed values
         ctx.translate(roll * 5, 0);
+        ctx.translate(posState.leX * le.w * 0.2, posState.leY * le.h * 0.2);
         const blinkL = Math.min(1, Math.max(0, earL / BLINK_THRESHOLD));
         ctx.scale(shapeState.leX, shapeState.leY * blinkL);
       } else {
@@ -220,6 +255,7 @@
       if (landmarks) {
         // Real-time mode: use computed values
         ctx.translate(roll * -5, 0);
+        ctx.translate(posState.reX * re.w * 0.2, posState.reY * re.h * 0.2);
         const blinkR = Math.min(1, Math.max(0, earR / BLINK_THRESHOLD));
         ctx.scale(shapeState.reX, shapeState.reY * blinkR);
       } else {
@@ -239,6 +275,7 @@
       
       if (landmarks) {
         // Real-time mode: scale by detected mouth shape
+        ctx.translate(posState.mX * mo.w * 0.3, posState.mY * mo.h * 0.3);
         ctx.translate(0, (shapeState.mY - 1) * mo.h * 0.15);
         ctx.scale(shapeState.mX, shapeState.mY);
       } else {
