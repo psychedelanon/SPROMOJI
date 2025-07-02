@@ -453,6 +453,7 @@ function startFaceTracking() {
     console.log('[spromoji] Starting face tracking loop...');
 
     let gotLandmarks = false;
+    let prevLandmarks = null;
 
     const trackFace = async () => {
         if (cam.readyState === cam.HAVE_ENOUGH_DATA) {
@@ -460,7 +461,18 @@ function startFaceTracking() {
                 const results = await liveMesh.detectForVideo(cam, performance.now());
 
                 if (results && results.faceLandmarks && results.faceLandmarks.length > 0) {
-                    const landmarks = results.faceLandmarks[0];
+                    let landmarks = results.faceLandmarks[0];
+
+                    // Smooth landmark updates for fluid animation (PR #8)
+                    if (prevLandmarks) {
+                        landmarks = landmarks.map((pt, idx) => ({
+                            x: pt.x * 0.6 + prevLandmarks[idx].x * 0.4,
+                            y: pt.y * 0.6 + prevLandmarks[idx].y * 0.4,
+                            z: pt.z * 0.6 + prevLandmarks[idx].z * 0.4
+                        }));
+                    }
+
+                    prevLandmarks = landmarks;
 
                     gotLandmarks = true;
                     

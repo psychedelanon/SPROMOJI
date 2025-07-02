@@ -23,3 +23,7 @@ python bot.py
 
 When running with polling, the bot will start in the background and the
 Flask server will serve the WebApp on port `5000` by default.
+
+## Recent changes
+
+- MediaPipe face tracking results are now smoothed across frames for a more fluid Memoji-like animation.
