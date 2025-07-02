@@ -1,9 +1,9 @@
 console.log('[faceWorker] booting…');
 
 import { FilesetResolver, FaceLandmarker } from
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/vision_bundle.mjs';
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs';
 
-const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm';
+const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm';
 const landmarker = await FaceLandmarker.create(
   await FilesetResolver.forVisionTasks(base, { forceSIMD:false }),  // WebView safe
   { runningMode:'VIDEO', numFaces:1, outputFaceBlendshapes:true }
