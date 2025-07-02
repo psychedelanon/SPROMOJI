@@ -28,3 +28,4 @@ Flask server will serve the WebApp on port `5000` by default.
 
 - MediaPipe face tracking results are now smoothed across frames for a more fluid Memoji-like animation.
 - Landmark smoothing uses the `LANDMARK_SMOOTHING` constant in `script.js` so the effect can be tuned.
+- Facial features now morph to the detected eye and mouth shape for a closer match to your real expressions.
