@@ -1,6 +1,11 @@
-console.log('[spromoji] Starting memoji revival...');
+// SPROMOJI - Landmark-to-Landmark Facial Morphing (Memoji-lite)
+// Phase P0: Avatar landmark detection and caching
+// Phase P1: Real-time mouth/eye morphing with Delaunay triangulation
 
-let cam, avatarCanvas, debugCanvas, ctx, debugCtx;
+console.log('[morph] SPROMOJI Facial Morphing starting...');
+
+// DOM elements (initialized in initializeApp)
+let cam, avatarCanvas, debugCanvas, debugOverlay, ctx, debugCtx, debugOverlayCtx;
 let avatarInput, startBtn, loadingIndicator, statusText, manualModeBtn;
 let avatarImg = null;
 let avatarRegions = null;
@@ -21,6 +26,7 @@ async function initializeApp() {
     
     avatarCanvas = document.getElementById('avatarCanvas');
     debugCanvas = document.getElementById('debugCanvas');
+    debugOverlay = document.getElementById('debugOverlay');
     cam = document.getElementById('cam');
     startBtn = document.getElementById('startBtn');
     avatarInput = document.getElementById('avatarInput');
@@ -35,6 +41,7 @@ async function initializeApp() {
     
     ctx = avatarCanvas.getContext('2d');
     debugCtx = debugCanvas.getContext('2d');
+    debugOverlayCtx = debugOverlay?.getContext('2d');
     
     if (avatarInput) {
         avatarInput.addEventListener('change', handleAvatarUpload);
@@ -82,6 +89,10 @@ async function loadAvatar(src) {
         avatarCanvas.height = avatarImg.height * scale;
         debugCanvas.width = avatarCanvas.width;
         debugCanvas.height = avatarCanvas.height;
+        if (debugOverlay) {
+            debugOverlay.width = avatarCanvas.width;
+            debugOverlay.height = avatarCanvas.height;
+        }
         
         ctx.drawImage(avatarImg, 0, 0, avatarCanvas.width, avatarCanvas.height);
         
