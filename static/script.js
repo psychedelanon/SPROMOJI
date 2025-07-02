@@ -142,12 +142,13 @@ async function initializeMediaPipe() {
     try {
         console.log('[spromoji] Loading MediaPipe...');
         
-        const { FaceLandmarker, FilesetResolver } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/vision_bundle.mjs');
+        const { FaceLandmarker, FilesetResolver } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs');
         
         console.log('[spromoji] MediaPipe loaded, creating instances...');
         
         const filesetResolver = await FilesetResolver.forVisionTasks(
-            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm",
+            { forceSIMD: false }
         );
         
         console.log('[spromoji] FilesetResolver created');
@@ -437,16 +438,20 @@ function startFaceTracking() {
         console.log('[spromoji] Cannot start tracking - missing:', {liveMesh: !!liveMesh, animationEnabled});
         return;
     }
-    
+
     console.log('[spromoji] Starting face tracking loop...');
-    
+
+    let gotLandmarks = false;
+
     const trackFace = async () => {
         if (cam.readyState === cam.HAVE_ENOUGH_DATA) {
             try {
                 const results = await liveMesh.detectForVideo(cam, performance.now());
-                
+
                 if (results && results.faceLandmarks && results.faceLandmarks.length > 0) {
                     const landmarks = results.faceLandmarks[0];
+
+                    gotLandmarks = true;
                     
                     const now = performance.now();
                     if (now - lastFrameTime >= 33) {
@@ -480,6 +485,13 @@ function startFaceTracking() {
     };
     
     trackFace();
+
+    setTimeout(() => {
+        if (!gotLandmarks) {
+            console.warn('[spromoji] No landmarks detected after timeout');
+            updateStatus('Face tracking failed. Try again or adjust lighting.');
+        }
+    }, 5000);
 }
 
 function startBasicAnimation() {
