@@ -1,9 +1,21 @@
 (function () {
   const BLINK_THRESHOLD = 0.17;  // EAR below this → eye closed
   const MOUTH_OPEN_THR  = 0.35;  // openness above this → mouth open (Pepe mouths often small)
+  const SHAPE_SMOOTHING = 0.3;   // smoothing for eye/mouth shape scaling
   const DEBUG_MOUTH = false;
 
   let r = null;  // cached regions + images
+
+  const LEFT_EYE_IDX  = [33, 133, 159, 145];
+  const RIGHT_EYE_IDX = [362, 263, 386, 374];
+  const MOUTH_IDX     = [61, 291, 13, 14];
+
+  let shapeBaseline = null;  // baseline feature sizes from first frame
+  let shapeState = {
+    leX: 1, leY: 1,
+    reX: 1, reY: 1,
+    mX: 1,  mY: 1
+  };
   
   // AI-driven animation state
   let animState = {
@@ -48,6 +60,49 @@
     return v / h;
   }
 
+  function bbox(lm, idxs){
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+    idxs.forEach(i=>{
+      const p = lm[i];
+      if (p.x<minX) minX=p.x;
+      if (p.x>maxX) maxX=p.x;
+      if (p.y<minY) minY=p.y;
+      if (p.y>maxY) maxY=p.y;
+    });
+    return {w:maxX-minX, h:maxY-minY};
+  }
+
+  function updateShape(lm){
+    if(!shapeBaseline){
+      shapeBaseline = {
+        le: bbox(lm, LEFT_EYE_IDX),
+        re: bbox(lm, RIGHT_EYE_IDX),
+        mo: bbox(lm, MOUTH_IDX)
+      };
+    }
+
+    const clamp = (v,mi,ma)=>Math.min(ma,Math.max(mi,v));
+    const lerp = (a,b,t)=>a*(1-t)+b*t;
+
+    const leBox = bbox(lm, LEFT_EYE_IDX);
+    const reBox = bbox(lm, RIGHT_EYE_IDX);
+    const moBox = bbox(lm, MOUTH_IDX);
+
+    const tLeX = clamp(leBox.w/shapeBaseline.le.w, 0.5, 1.5);
+    const tLeY = clamp(leBox.h/shapeBaseline.le.h, 0.5, 1.5);
+    const tReX = clamp(reBox.w/shapeBaseline.re.w, 0.5, 1.5);
+    const tReY = clamp(reBox.h/shapeBaseline.re.h, 0.5, 1.5);
+    const tMoX = clamp(moBox.w/shapeBaseline.mo.w, 0.8, 1.5);
+    const tMoY = clamp(moBox.h/shapeBaseline.mo.h, 0.8, 1.6);
+
+    shapeState.leX = lerp(shapeState.leX, tLeX, SHAPE_SMOOTHING);
+    shapeState.leY = lerp(shapeState.leY, tLeY, SHAPE_SMOOTHING);
+    shapeState.reX = lerp(shapeState.reX, tReX, SHAPE_SMOOTHING);
+    shapeState.reY = lerp(shapeState.reY, tReY, SHAPE_SMOOTHING);
+    shapeState.mX  = lerp(shapeState.mX,  tMoX, SHAPE_SMOOTHING);
+    shapeState.mY  = lerp(shapeState.mY,  tMoY, SHAPE_SMOOTHING);
+  }
+
   window.RegionAnimator = {
     /** cache feature bitmaps & rects */
     init(ctx, regions, avatarImg) {
@@ -87,6 +142,8 @@
       animState.eyeScaleRight = 1.0;
       animState.mouthScale = 1.0;
       animState.globalTilt = 0.0;
+      shapeBaseline = null;
+      shapeState = { leX:1, leY:1, reX:1, reY:1, mX:1, mY:1 };
       r = null;
       console.debug('[RegionAnimator] State reset');
     },
@@ -105,7 +162,9 @@
         earL = computeEAR(landmarks, 159, 145, 33, 133);
         earR = computeEAR(landmarks, 386, 374, 362, 263);
         mouthO = computeMouthOpenness(landmarks);
-        
+
+        updateShape(landmarks);
+
         if (DEBUG_MOUTH) console.debug('mouth ratio', mouthO.toFixed(2));
       }
 
@@ -137,18 +196,18 @@
       ctx.save();
       const le = r.regs.leftEye;
       ctx.translate(le.x + le.w/2, le.y + le.h/2);
-      
+
       if (landmarks) {
         // Real-time mode: use computed values
         ctx.translate(roll * 5, 0);
-        const blinkL = earL < BLINK_THRESHOLD ? 0 : 1;
-        ctx.globalAlpha = blinkL;
+        const blinkL = Math.min(1, Math.max(0, earL / BLINK_THRESHOLD));
+        ctx.scale(shapeState.leX, shapeState.leY * blinkL);
       } else {
         // AI-driven mode: use stored animation state
         ctx.translate(animState.globalTilt * 5, 0);
         ctx.scale(1, animState.eyeScaleLeft);
       }
-      
+
       ctx.drawImage(r.leftEyeImg, -le.w/2, -le.h/2, le.w, le.h);
       ctx.globalAlpha = 1;
       ctx.restore();
@@ -157,18 +216,18 @@
       ctx.save();
       const re = r.regs.rightEye;
       ctx.translate(re.x + re.w/2, re.y + re.h/2);
-      
+
       if (landmarks) {
         // Real-time mode: use computed values
         ctx.translate(roll * -5, 0);
-        const blinkR = earR < BLINK_THRESHOLD ? 0 : 1;
-        ctx.globalAlpha = blinkR;
+        const blinkR = Math.min(1, Math.max(0, earR / BLINK_THRESHOLD));
+        ctx.scale(shapeState.reX, shapeState.reY * blinkR);
       } else {
         // AI-driven mode: use stored animation state
         ctx.translate(animState.globalTilt * -5, 0);
         ctx.scale(1, animState.eyeScaleRight);
       }
-      
+
       ctx.drawImage(r.rightEyeImg, -re.w/2, -re.h/2, re.w, re.h);
       ctx.globalAlpha = 1;
       ctx.restore();
@@ -179,19 +238,16 @@
       ctx.translate(mo.x + mo.w/2, mo.y + mo.h/2);
       
       if (landmarks) {
-        // Real-time mode: use mouth openness from landmarks
-        const mouthOpen = mouthO > MOUTH_OPEN_THR;
-        if (mouthOpen) {
-          ctx.translate(0, mo.h * 0.15);
-          ctx.scale(1, 1.3);
-        }
+        // Real-time mode: scale by detected mouth shape
+        ctx.translate(0, (shapeState.mY - 1) * mo.h * 0.15);
+        ctx.scale(shapeState.mX, shapeState.mY);
       } else {
         // AI-driven mode: use stored mouth scale
         const mouthOpenF = (animState.mouthScale - 1.0) / 0.3; // 0→1
-        ctx.translate(0, mouthOpenF * mo.h * 0.15);   // drop when open
-        ctx.scale(1, animState.mouthScale);           // scale up
+        ctx.translate(0, mouthOpenF * mo.h * 0.15);
+        ctx.scale(1, animState.mouthScale);
       }
-      
+
       ctx.drawImage(r.mouthImg, -mo.w/2, -mo.h/2, mo.w, mo.h);
       ctx.restore();
     }
