@@ -128,13 +128,38 @@
     ctx.restore();
   }
 
+  function rigFromRegions(regions, img){
+    const w = img.width;
+    const h = img.height;
+    const L = regions.leftEye;
+    const R = regions.rightEye;
+    const M = regions.mouth;
+    function uv(x,y){ return {u:x/w, v:y/h}; }
+    const verts = [
+      {id:0, ...uv(L.x, L.y), weights:{eyeBlinkLeft:-5}},
+      {id:1, ...uv(L.x+L.w, L.y), weights:{eyeBlinkLeft:-5}},
+      {id:2, ...uv(R.x, R.y), weights:{eyeBlinkRight:-5}},
+      {id:3, ...uv(R.x+R.w, R.y), weights:{eyeBlinkRight:-5}},
+      {id:4, ...uv(M.x, M.y), weights:{jawOpen:8}},
+      {id:5, ...uv(M.x+M.w, M.y), weights:{jawOpen:8}},
+      {id:6, ...uv(M.x+M.w/2, M.y+M.h), weights:{jawOpen:8}},
+      {id:7, ...uv((L.x+L.w/2+R.x+R.w/2)/2, Math.min(L.y,R.y)*0.9), weights:{browDownLeft:2,browDownRight:2}}
+    ];
+    const tris = [[0,1,4],[1,2,4],[2,5,4],[2,3,5],[4,5,6],[0,7,1],[3,7,2]];
+    return {vertices:verts, triangles:tris};
+  }
+
   window.RegionAnimator = {
-    async init(context, img){
+    async init(context, img, regions=null){
       try {
         ctx = context;
         avatarImg = img;
         console.log('[RegionAnimator] Initializing mesh system...');
-        await loadRig('/static/avatarRig.json');
+        if(regions){
+          rig = rigFromRegions(regions, img);
+        } else {
+          await loadRig('/static/avatarRig.json');
+        }
         updateVertices();
         render();
         console.log('[RegionAnimator] Mesh system initialized successfully!');
