@@ -11,6 +11,7 @@
   let triangles = [];
   let blendState = {};
   let orientState = { yaw:0, pitch:0 };
+  let featureMeshes = null;
 
   function lerp(a,b,t){ return a*(1-t)+b*t; }
 
@@ -80,6 +81,26 @@
     ctx.restore();
   }
 
+  function deform(mesh, a=0, b=0){
+    if(!mesh || !mesh.vertices) return;
+    const amt = (a||0)+(b||0);
+    mesh.vertices.forEach(v=>{
+      v.y += amt * -2;
+    });
+  }
+
+  function applyBlendshapes(bs){
+    if(!featureMeshes) return;
+    const blinkL = bs['eyeBlinkLeft']||0;
+    const blinkR = bs['eyeBlinkRight']||0;
+    const jaw    = bs['jawOpen']||0;
+    const smile  = bs['mouthSmile']||0;
+
+    deform(featureMeshes.L_EYE, blinkL);
+    deform(featureMeshes.R_EYE, blinkR);
+    deform(featureMeshes.MOUTH, jaw, smile);
+  }
+
   function render(){
     if(!ctx) return;
     ctx.clearRect(0,0,ctx.canvas.width, ctx.canvas.height);
@@ -104,6 +125,9 @@
       updateVertices();
       render();
     },
+    setMeshes(meshes){
+      featureMeshes = meshes;
+    },
     reset(){
       blendState = {};
       orientState = {yaw:0,pitch:0};
@@ -111,6 +135,7 @@
     update(blend, landmarks){
       if(!rig) return;
       applyBlend(blend);
+      applyBlendshapes(blend);
       if(landmarks){
         const yaw = (landmarks[1].x - ((landmarks[33].x+landmarks[263].x)/2)) / (landmarks[263].x - landmarks[33].x);
         const top = landmarks[10].y;
