@@ -67,7 +67,7 @@
     const w=canvas.width,h=canvas.height;
     const ctx=canvas.getContext('2d');
     const data=ctx.getImageData(0,0,w,h).data;
-    const dark=[];
+    const dark=[], light=[];
     const grad=new Float32Array(w*h);
     for(let y=1;y<h-1;y++){
       for(let x=1;x<w-1;x++){
@@ -76,6 +76,7 @@
         const hsv=rgb2hsv(r,g,b);
         const gray=(0.299*r+0.587*g+0.114*b)/255;
         if(!(hsv.s<0.25 && hsv.v>0.85) && gray<0.4) dark.push({x,y});
+        if(hsv.s<0.25 && hsv.v>0.85) light.push({x,y});
         const idxR=idx+4;
         const idxD=idx+w*4;
         const gR=(0.299*data[idxR]+0.587*data[idxR+1]+0.114*data[idxR+2])/255;
@@ -83,8 +84,12 @@
         grad[y*w+x]=Math.abs(gray-gR)+Math.abs(gray-gD);
       }
     }
-    if(dark.length<20) return null;
-    const clusters=kmeans(dark,2).sort((a,b)=>a.cx-b.cx);
+    let eyePts=[];
+    if(dark.length>=20 && light.length>=20) eyePts=dark.concat(light);
+    else if(dark.length>=20) eyePts=dark;
+    else if(light.length>=20) eyePts=light;
+    if(eyePts.length<20) return null;
+    const clusters=kmeans(eyePts,2).sort((a,b)=>a.cx-b.cx);
     const pad=5;
     const left={x:Math.max(clusters[0].x-pad,0),y:Math.max(clusters[0].y-pad,0),w:Math.min(clusters[0].w+pad*2,w),h:Math.min(clusters[0].h+pad*2,h)};
     const right={x:Math.max(clusters[1].x-pad,0),y:Math.max(clusters[1].y-pad,0),w:Math.min(clusters[1].w+pad*2,w),h:Math.min(clusters[1].h+pad*2,h)};

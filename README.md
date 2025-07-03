@@ -36,3 +36,4 @@ Flask server will serve the WebApp on port `5000` by default.
 - Facial rig uses triangulated mesh driven by Face Landmarker blendshapes for accurate motion.
 - Avatar anchor points are stored in `avatarRig.json` and only need to be clicked once.
 - Recording chooses MP4/H.264 when available so downloads play everywhere.
+- Cartoon avatars are detected more reliably using combined dark/bright eye candidates.
