@@ -16,19 +16,30 @@
   function lerp(a,b,t){ return a*(1-t)+b*t; }
 
   async function loadRig(url){
-    const res = await fetch(url);
-    rig = await res.json();
-    vertices = rig.vertices.map(v=>({
-      id:v.id,
-      u:v.u,
-      v:v.v,
-      baseX:0,
-      baseY:0,
-      x:0,
-      y:0,
-      weights:v.weights||{}
-    }));
-    triangles = rig.triangles;
+    try {
+      console.log('[RegionAnimator] Loading rig from:', url);
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch rig: ${res.status}`);
+      }
+      rig = await res.json();
+      console.log('[RegionAnimator] Rig loaded:', rig);
+      vertices = rig.vertices.map(v=>({
+        id:v.id,
+        u:v.u,
+        v:v.v,
+        baseX:0,
+        baseY:0,
+        x:0,
+        y:0,
+        weights:v.weights||{}
+      }));
+      triangles = rig.triangles;
+      console.log('[RegionAnimator] Mesh initialized with', vertices.length, 'vertices and', triangles.length, 'triangles');
+    } catch (error) {
+      console.error('[RegionAnimator] Failed to load rig:', error);
+      throw error;
+    }
   }
 
   function applyBlend(blend){
@@ -119,11 +130,20 @@
 
   window.RegionAnimator = {
     async init(context, img){
-      ctx = context;
-      avatarImg = img;
-      await loadRig('/static/avatarRig.json');
-      updateVertices();
-      render();
+      try {
+        ctx = context;
+        avatarImg = img;
+        console.log('[RegionAnimator] Initializing mesh system...');
+        await loadRig('/static/avatarRig.json');
+        updateVertices();
+        render();
+        console.log('[RegionAnimator] Mesh system initialized successfully!');
+        return true;
+      } catch (error) {
+        console.error('[RegionAnimator] Mesh system failed to initialize:', error);
+        console.log('[RegionAnimator] Falling back to region-based animation...');
+        return false;
+      }
     },
     setMeshes(meshes){
       featureMeshes = meshes;

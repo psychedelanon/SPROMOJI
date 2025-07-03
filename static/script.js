@@ -102,11 +102,29 @@ async function loadAvatar(src) {
         console.log('[spromoji] Canvas dimensions set:', avatarCanvas.width, 'x', avatarCanvas.height);
         
         await initializeMediaPipe();
+        
+        // Try to initialize the mesh-based animation system
+        let meshSuccess = false;
         if (window.RegionAnimator) {
-            await window.RegionAnimator.init(ctx, avatarImg);
+            meshSuccess = await window.RegionAnimator.init(ctx, avatarImg);
         }
-        await initPreview();
-        updateStatus('Avatar loaded - try making expressions!');
+        
+        if (meshSuccess) {
+            console.log('[spromoji] Using mesh-based animation system');
+            animationEnabled = true;
+            await initPreview();
+            updateStatus('Avatar loaded - try making expressions!');
+        } else {
+            console.log('[spromoji] Mesh system failed, falling back to region detection');
+            const autoSuccess = await tryAutoDetection();
+            
+            if (!autoSuccess) {
+                updateStatus('Auto-detection failed. Use manual selection.');
+                console.log('[spromoji] Auto-detection failed, manual mode available');
+                if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
+                await initPreview();
+            }
+        }
         
     } catch (error) {
         console.error('[spromoji] Failed to load avatar:', error);
