@@ -3,13 +3,14 @@
   const MOUTH_OPEN_THR  = 0.35;  // openness above this → mouth open (Pepe mouths often small)
   const SHAPE_SMOOTHING = 0.3;   // smoothing for eye/mouth shape scaling
   const MOVE_SMOOTHING  = 0.4;   // smoothing for eye/mouth translation
+  const ORIENT_SMOOTHING = 0.3;  // smoothing for pitch/yaw
   const DEBUG_MOUTH = false;
 
   let r = null;  // cached regions + images
 
-  const LEFT_EYE_IDX  = [33, 133, 159, 145];
-  const RIGHT_EYE_IDX = [362, 263, 386, 374];
-  const MOUTH_IDX     = [61, 291, 13, 14];
+  const LEFT_EYE_IDX  = [33, 7, 163, 144, 145, 153, 154, 155, 133];
+  const RIGHT_EYE_IDX = [362, 382, 381, 380, 374, 373, 390, 249, 263];
+  const MOUTH_IDX     = [61, 291, 78, 308, 12, 15, 13, 14];
   const LEFT_IRIS_C   = 468;  // iris center indices from MediaPipe
   const RIGHT_IRIS_C  = 473;
 
@@ -21,6 +22,7 @@
     mX: 1,  mY: 1
   };
   let posState = { leX:0, leY:0, reX:0, reY:0, mX:0, mY:0 };
+  let orientState = { yaw: 0, pitch: 0 };
   
   // AI-driven animation state
   let animState = {
@@ -56,6 +58,14 @@
     const cx = (left.x + right.x) / 2;
     const w = right.x - left.x;
     return (nose.x - cx) / w;
+  }
+
+  function computePitch(lm) {
+    const top = lm[10].y;
+    const bottom = lm[152].y;
+    const nose = lm[1].y;
+    const faceH = bottom - top;
+    return ((nose - top) / faceH) - 0.5;
   }
 
   // Use outer-lip pair 12 / 15 (upper/lower) – gives bigger delta
@@ -178,6 +188,7 @@
       posBaseline = null;
       shapeState = { leX:1, leY:1, reX:1, reY:1, mX:1, mY:1 };
       posState = { leX:0, leY:0, reX:0, reY:0, mX:0, mY:0 };
+      orientState = { yaw:0, pitch:0 };
       r = null;
       console.debug('[RegionAnimator] State reset');
     },
@@ -187,17 +198,20 @@
       if (!r) return;
 
       // Use landmarks if provided (real-time mode), otherwise use stored animation state
-      let roll = 0, yaw = 0, earL = 1, earR = 1, mouthO = 0;
+      let roll = 0, yaw = 0, pitch = 0, earL = 1, earR = 1, mouthO = 0;
       
       if (landmarks && landmarks.length > 0) {
         // Real-time MediaPipe mode
         roll = computeRoll(landmarks);
         yaw = computeYaw(landmarks);
+        pitch = computePitch(landmarks);
         earL = computeEAR(landmarks, 159, 145, 33, 133);
         earR = computeEAR(landmarks, 386, 374, 362, 263);
         mouthO = computeMouthOpenness(landmarks);
 
         updateShape(landmarks);
+        orientState.yaw = orientState.yaw * (1 - ORIENT_SMOOTHING) + yaw * ORIENT_SMOOTHING;
+        orientState.pitch = orientState.pitch * (1 - ORIENT_SMOOTHING) + pitch * ORIENT_SMOOTHING;
 
         if (DEBUG_MOUTH) console.debug('mouth ratio', mouthO.toFixed(2));
       }
@@ -232,11 +246,14 @@
       ctx.translate(le.x + le.w/2, le.y + le.h/2);
 
       if (landmarks) {
-        // Real-time mode: use computed values
+        const clamp = (v,mi,ma)=>Math.min(ma,Math.max(mi,v));
         ctx.translate(roll * 5, 0);
         ctx.translate(posState.leX * le.w * 0.2, posState.leY * le.h * 0.2);
+        ctx.translate(-orientState.yaw * le.w * 0.2, orientState.pitch * le.h * 0.1);
         const blinkL = Math.min(1, Math.max(0, earL / BLINK_THRESHOLD));
-        ctx.scale(shapeState.leX, shapeState.leY * blinkL);
+        const yawScale = clamp(1 - orientState.yaw * 0.4, 0.6, 1.4);
+        const pitchScale = 1 + orientState.pitch * 0.2;
+        ctx.scale(shapeState.leX * yawScale, shapeState.leY * blinkL * pitchScale);
       } else {
         // AI-driven mode: use stored animation state
         ctx.translate(animState.globalTilt * 5, 0);
@@ -255,11 +272,14 @@
       ctx.translate(re.x + re.w/2, re.y + re.h/2);
 
       if (landmarks) {
-        // Real-time mode: use computed values
+        const clamp = (v,mi,ma)=>Math.min(ma,Math.max(mi,v));
         ctx.translate(roll * -5, 0);
         ctx.translate(posState.reX * re.w * 0.2, posState.reY * re.h * 0.2);
+        ctx.translate(-orientState.yaw * re.w * 0.2, orientState.pitch * re.h * 0.1);
         const blinkR = Math.min(1, Math.max(0, earR / BLINK_THRESHOLD));
-        ctx.scale(shapeState.reX, shapeState.reY * blinkR);
+        const yawScale = clamp(1 + orientState.yaw * 0.4, 0.6, 1.4);
+        const pitchScale = 1 + orientState.pitch * 0.2;
+        ctx.scale(shapeState.reX * yawScale, shapeState.reY * blinkR * pitchScale);
       } else {
         // AI-driven mode: use stored animation state
         ctx.translate(animState.globalTilt * -5, 0);
@@ -279,10 +299,13 @@
       ctx.translate(mo.x + mo.w/2, mo.y + mo.h/2);
       
       if (landmarks) {
-        // Real-time mode: scale by detected mouth shape
+        const clamp = (v,mi,ma)=>Math.min(ma,Math.max(mi,v));
         ctx.translate(posState.mX * mo.w * 0.3, posState.mY * mo.h * 0.3);
+        ctx.translate(orientState.yaw * mo.w * 0.3, orientState.pitch * mo.h * 0.2);
         ctx.translate(0, (shapeState.mY - 1) * mo.h * 0.15);
-        ctx.scale(shapeState.mX, shapeState.mY);
+        const yawScale = clamp(1 + orientState.yaw * 0.2, 0.7, 1.3);
+        const pitchScale = 1 + orientState.pitch * 0.2;
+        ctx.scale(shapeState.mX * yawScale, shapeState.mY * pitchScale);
       } else {
         // AI-driven mode: use stored mouth scale
         const mouthOpenF = (animState.mouthScale - 1.0) / 0.3; // 0→1

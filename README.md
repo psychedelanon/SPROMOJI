@@ -32,3 +32,4 @@ Flask server will serve the WebApp on port `5000` by default.
 - Pupils and mouth position now follow your movements for natural blinking and talking.
 - Eye and mouth regions are clipped to smooth ellipses so scaling no longer shows square artifacts.
 - Video recording now includes microphone audio and automatically downloads when finished.
+- Facial features now react to head yaw and pitch for a subtle 3D effect.
