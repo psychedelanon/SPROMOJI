@@ -335,7 +335,7 @@ function completeSelection() {
         };
     }
     
-    RegionAnimator.init(selectionState.ctx, processedRegions, selectionState.avatarImg);
+    RegionAnimator.init(selectionState.ctx, selectionState.avatarImg);
     avatarRegions = processedRegions;
     animationReady = true;
     log('manual regions set');

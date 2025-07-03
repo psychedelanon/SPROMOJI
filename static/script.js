@@ -235,7 +235,7 @@ async function tryAutoDetection() {
             console.table(avatarRegions);
             
             if (window.RegionAnimator) {
-                window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
+                window.RegionAnimator.init(ctx, avatarImg);
                 console.log('[spromoji] RegionAnimator initialized with cartoon regions');
             } else {
                 console.error('[spromoji] RegionAnimator not available!');
@@ -273,7 +273,7 @@ async function tryAutoDetection() {
                 console.table(avatarRegions);
                 
                 if (window.RegionAnimator) {
-                    window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
+                    window.RegionAnimator.init(ctx, avatarImg);
                     console.log('[spromoji] RegionAnimator initialized with MediaPipe regions');
                 } else {
                     console.error('[spromoji] RegionAnimator not available!');
@@ -329,7 +329,7 @@ async function startManualSelection() {
         console.table(avatarRegions);
         
         if (window.RegionAnimator) {
-            window.RegionAnimator.init(ctx, avatarRegions, avatarImg);
+            window.RegionAnimator.init(ctx, avatarImg);
             console.log('[spromoji] RegionAnimator initialized with manual regions');
         } else {
             console.error('[spromoji] RegionAnimator not available!');
