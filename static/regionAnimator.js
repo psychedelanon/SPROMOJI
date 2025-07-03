@@ -1,199 +1,127 @@
 (function () {
-  const BLINK_THRESHOLD = 0.17;  // EAR below this → eye closed
-  const MOUTH_OPEN_THR  = 0.35;  // openness above this → mouth open (Pepe mouths often small)
-  const DEBUG_MOUTH = false;
+  const POS_SMOOTH = 0.75;
+  const BLEND_SMOOTH = 0.85;
+  const ROT_SMOOTH = 0.80;
+  const DEPTH_OFFSET = 2; // px for fake volume
 
-  let r = null;  // cached regions + images
-  
-  // AI-driven animation state
-  let animState = {
-    eyeScaleLeft: 1.0,
-    eyeScaleRight: 1.0, 
-    mouthScale: 1.0,
-    globalTilt: 0.0
-  };
+  let ctx = null;
+  let avatarImg = null;
+  let rig = null;
+  let vertices = [];
+  let triangles = [];
+  let blendState = {};
+  let orientState = { yaw:0, pitch:0 };
 
-  function cropRegion(img, reg) {
-    const c = document.createElement('canvas');
-    c.width = reg.w; c.height = reg.h;
-    c.getContext('2d').drawImage(img, reg.x, reg.y, reg.w, reg.h, 0, 0, reg.w, reg.h);
-    return c;
+  function lerp(a,b,t){ return a*(1-t)+b*t; }
+
+  async function loadRig(url){
+    const res = await fetch(url);
+    rig = await res.json();
+    vertices = rig.vertices.map(v=>({
+      id:v.id,
+      u:v.u,
+      v:v.v,
+      baseX:0,
+      baseY:0,
+      x:0,
+      y:0,
+      weights:v.weights||{}
+    }));
+    triangles = rig.triangles;
   }
 
-  function computeEAR(lm, idxTop, idxBot, idxLeft, idxRight) {
-    const vDist = Math.hypot(lm[idxTop].x - lm[idxBot].x, lm[idxTop].y - lm[idxBot].y);
-    const hDist = Math.hypot(lm[idxLeft].x - lm[idxRight].x, lm[idxLeft].y - lm[idxRight].y);
-    return vDist / hDist;
+  function applyBlend(blend){
+    for(const k in blend){
+      blendState[k] = blendState[k]===undefined ? blend[k] : lerp(blendState[k], blend[k], BLEND_SMOOTH);
+    }
   }
 
-  function computeRoll(lm) {
-    const dy = lm[263].y - lm[33].y;
-    const dx = lm[263].x - lm[33].x;
-    return Math.atan2(dy, dx);
+  function updateVertices(){
+    if(!avatarImg) return;
+    vertices.forEach(v=>{
+      const baseX = v.u * avatarImg.width;
+      const baseY = v.v * avatarImg.height;
+      let dx = 0, dy = 0;
+      for(const [k,w] of Object.entries(v.weights)){
+        dx += (blendState[k]||0) * w;
+      }
+      v.x = lerp(v.x, baseX + dx + orientState.yaw*4, POS_SMOOTH);
+      v.y = lerp(v.y, baseY + dy + orientState.pitch*4, POS_SMOOTH);
+    });
   }
 
-  function computeYaw(lm) {
-    const left = lm[33];
-    const right = lm[263];
-    const nose = lm[1];
-    const cx = (left.x + right.x) / 2;
-    const w = right.x - left.x;
-    return (nose.x - cx) / w;
+  function drawTriangle(t){
+    const v0 = vertices[t[0]];
+    const v1 = vertices[t[1]];
+    const v2 = vertices[t[2]];
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(v0.x, v0.y);
+    ctx.lineTo(v1.x, v1.y);
+    ctx.lineTo(v2.x, v2.y);
+    ctx.closePath();
+    ctx.clip();
+    const u0 = v0.u*avatarImg.width;
+    const v0y = v0.v*avatarImg.height;
+    const u1 = v1.u*avatarImg.width;
+    const v1y = v1.v*avatarImg.height;
+    const u2 = v2.u*avatarImg.width;
+    const v2y = v2.v*avatarImg.height;
+    const denom = (u1-u0)*(v2y-v0y)-(u2-u0)*(v1y-v0y);
+    if(denom===0){ ctx.restore(); return; }
+    const m11 = (v1.x-v0.x)*(v2y-v0y)-(v2.x-v0.x)*(v1y-v0y);
+    const m12 = (v1.y-v0.y)*(v2y-v0y)-(v2.y-v0.y)*(v1y-v0y);
+    const m21 = (v2.x-v0.x)*(u1-u0)-(v1.x-v0.x)*(u2-u0);
+    const m22 = (v2.y-v0.y)*(u1-u0)-(v1.y-v0.y)*(u2-u0);
+    const dx = v0.x - m11*u0 - m21*v0y;
+    const dy = v0.y - m12*u0 - m22*v0y;
+    ctx.setTransform(m11, m12, m21, m22, dx, dy);
+    ctx.drawImage(avatarImg,0,0);
+    ctx.restore();
   }
 
-  // Use outer-lip pair 12 / 15 (upper/lower) – gives bigger delta
-  function computeMouthOpenness(lm) {
-    const v = Math.hypot(lm[12].x - lm[15].x, lm[12].y - lm[15].y);  // outer lips
-    const h = Math.hypot(lm[61].x - lm[291].x, lm[61].y - lm[291].y);  // mouth width
-    return v / h;
+  function render(){
+    if(!ctx) return;
+    ctx.clearRect(0,0,ctx.canvas.width, ctx.canvas.height);
+    ctx.save();
+    ctx.translate(0,0);
+    triangles.forEach(t=>drawTriangle(t));
+    ctx.restore();
+
+    // fake depth layer
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.translate(-DEPTH_OFFSET*orientState.yaw, -DEPTH_OFFSET*orientState.pitch);
+    triangles.forEach(t=>drawTriangle(t));
+    ctx.restore();
   }
 
   window.RegionAnimator = {
-    /** cache feature bitmaps & rects */
-    init(ctx, regions, avatarImg) {
-      r = {
-        baseImg: avatarImg,
-        leftEyeImg:  cropRegion(avatarImg, regions.leftEye),
-        rightEyeImg: cropRegion(avatarImg, regions.rightEye),
-        mouthImg:    cropRegion(avatarImg, regions.mouth),
-        regs: regions,
-        canvasW: ctx.canvas.width,
-        canvasH: ctx.canvas.height
-      };
-      
-      console.debug('[RegionAnimator] init OK', r);
+    async init(context, img){
+      ctx = context;
+      avatarImg = img;
+      await loadRig('/static/avatarRig.json');
+      updateVertices();
+      render();
     },
-
-    /** AI-driven setters */
-    setEyeScaleY(val, right = false) {
-      if (right) {
-        animState.eyeScaleRight = Math.max(0.1, Math.min(val, 1.0));
-      } else {
-        animState.eyeScaleLeft = Math.max(0.1, Math.min(val, 1.0));
-      }
+    reset(){
+      blendState = {};
+      orientState = {yaw:0,pitch:0};
     },
-    
-    setMouthScale(val) {
-      animState.mouthScale = Math.max(1.0, Math.min(val, 1.3));
-    },
-    
-    setGlobalTilt(rad) {
-      animState.globalTilt = Math.max(-Math.PI/8, Math.min(rad, Math.PI/8));
-    },
-    
-    /** Reset animation state */
-    reset() {
-      animState.eyeScaleLeft = 1.0;
-      animState.eyeScaleRight = 1.0;
-      animState.mouthScale = 1.0;
-      animState.globalTilt = 0.0;
-      r = null;
-      console.debug('[RegionAnimator] State reset');
-    },
-
-    /** draw one frame using stored animation state - optimized for smoothness */
-    animate(ctx, landmarks = null) {
-      if (!r) return;
-
-      // Use landmarks if provided (real-time mode), otherwise use stored animation state
-      let roll = 0, yaw = 0, earL = 1, earR = 1, mouthO = 0;
-      
-      if (landmarks && landmarks.length > 0) {
-        // Real-time MediaPipe mode
-        roll = computeRoll(landmarks);
-        yaw = computeYaw(landmarks);
-        earL = computeEAR(landmarks, 159, 145, 33, 133);
-        earR = computeEAR(landmarks, 386, 374, 362, 263);
-        mouthO = computeMouthOpenness(landmarks);
-        
-        if (DEBUG_MOUTH) console.debug('mouth ratio', mouthO.toFixed(2));
+    update(blend, landmarks){
+      if(!rig) return;
+      applyBlend(blend);
+      if(landmarks){
+        const yaw = (landmarks[1].x - ((landmarks[33].x+landmarks[263].x)/2)) / (landmarks[263].x - landmarks[33].x);
+        const top = landmarks[10].y;
+        const bottom = landmarks[152].y;
+        const nose = landmarks[1].y;
+        const pitch = ((nose-top)/(bottom-top))-0.5;
+        orientState.yaw = lerp(orientState.yaw, yaw, ROT_SMOOTH);
+        orientState.pitch = lerp(orientState.pitch, pitch, ROT_SMOOTH);
       }
-
-      // 1. base avatar with global tilt - smooth drawing
-      ctx.save();
-      ctx.clearRect(0, 0, r.canvasW, r.canvasH);
-      ctx.translate(r.canvasW/2, r.canvasH/2);
-      
-      if (landmarks) {
-        // Real-time mode: use computed values
-        ctx.rotate(roll * 0.3 + yaw * 0.2);
-        ctx.translate((Math.random()-0.5)*2, (Math.random()-0.5)*2);
-      } else {
-        // AI-driven mode: use stored animation state
-        ctx.rotate(animState.globalTilt * 0.3);
-      }
-      
-      ctx.translate(-r.canvasW/2, -r.canvasH/2);
-      ctx.drawImage(r.baseImg, 0, 0, r.canvasW, r.canvasH);
-      ctx.restore();
-      
-      // Theme effects should be UI-only, not overlaid on avatar
-      // Removed viral effects overlay to keep avatar clean
-
-      // draw helpers
-      ctx.imageSmoothingEnabled = true;
-
-      /********* LEFT EYE *********/
-      ctx.save();
-      const le = r.regs.leftEye;
-      ctx.translate(le.x + le.w/2, le.y + le.h/2);
-      
-      if (landmarks) {
-        // Real-time mode: use computed values
-        ctx.translate(roll * 5, 0);
-        const blinkL = earL < BLINK_THRESHOLD ? 0 : 1;
-        ctx.globalAlpha = blinkL;
-      } else {
-        // AI-driven mode: use stored animation state
-        ctx.translate(animState.globalTilt * 5, 0);
-        ctx.scale(1, animState.eyeScaleLeft);
-      }
-      
-      ctx.drawImage(r.leftEyeImg, -le.w/2, -le.h/2, le.w, le.h);
-      ctx.globalAlpha = 1;
-      ctx.restore();
-
-      /********* RIGHT EYE *********/
-      ctx.save();
-      const re = r.regs.rightEye;
-      ctx.translate(re.x + re.w/2, re.y + re.h/2);
-      
-      if (landmarks) {
-        // Real-time mode: use computed values
-        ctx.translate(roll * -5, 0);
-        const blinkR = earR < BLINK_THRESHOLD ? 0 : 1;
-        ctx.globalAlpha = blinkR;
-      } else {
-        // AI-driven mode: use stored animation state
-        ctx.translate(animState.globalTilt * -5, 0);
-        ctx.scale(1, animState.eyeScaleRight);
-      }
-      
-      ctx.drawImage(r.rightEyeImg, -re.w/2, -re.h/2, re.w, re.h);
-      ctx.globalAlpha = 1;
-      ctx.restore();
-
-      /********* MOUTH *********/
-      ctx.save();
-      const mo = r.regs.mouth;
-      ctx.translate(mo.x + mo.w/2, mo.y + mo.h/2);
-      
-      if (landmarks) {
-        // Real-time mode: use mouth openness from landmarks
-        const mouthOpen = mouthO > MOUTH_OPEN_THR;
-        if (mouthOpen) {
-          ctx.translate(0, mo.h * 0.15);
-          ctx.scale(1, 1.3);
-        }
-      } else {
-        // AI-driven mode: use stored mouth scale
-        const mouthOpenF = (animState.mouthScale - 1.0) / 0.3; // 0→1
-        ctx.translate(0, mouthOpenF * mo.h * 0.15);   // drop when open
-        ctx.scale(1, animState.mouthScale);           // scale up
-      }
-      
-      ctx.drawImage(r.mouthImg, -mo.w/2, -mo.h/2, mo.w, mo.h);
-      ctx.restore();
+      updateVertices();
+      render();
     }
   };
-})(); 
+})();

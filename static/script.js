@@ -102,14 +102,11 @@ async function loadAvatar(src) {
         console.log('[spromoji] Canvas dimensions set:', avatarCanvas.width, 'x', avatarCanvas.height);
         
         await initializeMediaPipe();
-        const autoSuccess = await tryAutoDetection();
-        
-        if (!autoSuccess) {
-            updateStatus('Auto-detection failed. Use manual selection.');
-            console.log('[spromoji] Auto-detection failed, manual mode available');
-            if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
-            await initPreview();
+        if (window.RegionAnimator) {
+            await window.RegionAnimator.init(ctx, avatarImg);
         }
+        await initPreview();
+        updateStatus('Avatar loaded - try making expressions!');
         
     } catch (error) {
         console.error('[spromoji] Failed to load avatar:', error);
@@ -172,7 +169,7 @@ async function initializeMediaPipe() {
                 modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
                 delegate: 'CPU'
             },
-            outputFaceBlendshapes: false,
+            outputFaceBlendshapes: true,
             outputFacialTransformationMatrixes: false,
             runningMode: 'IMAGE',
             numFaces: 1
@@ -185,7 +182,7 @@ async function initializeMediaPipe() {
                 modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
                 delegate: 'CPU'
             },
-            outputFaceBlendshapes: false,
+            outputFaceBlendshapes: true,
             outputFacialTransformationMatrixes: false,
             runningMode: 'VIDEO',
             numFaces: 1
@@ -457,6 +454,7 @@ function startFaceTracking() {
 
     let gotLandmarks = false;
     let prevLandmarks = null;
+    let prevBlend = {};
 
     const trackFace = async () => {
         if (cam.readyState === cam.HAVE_ENOUGH_DATA) {
@@ -465,6 +463,7 @@ function startFaceTracking() {
 
                 if (results && results.faceLandmarks && results.faceLandmarks.length > 0) {
                     let landmarks = results.faceLandmarks[0];
+                    const blend = Object.fromEntries((results.faceBlendshapes[0]?.categories||[]).map(c=>[c.categoryName,c.score]));
 
                     // Smooth landmark updates for fluid animation
                     if (prevLandmarks) {
@@ -478,6 +477,7 @@ function startFaceTracking() {
                     }
 
                     prevLandmarks = landmarks;
+                    prevBlend = blend;
 
                     gotLandmarks = true;
                     
@@ -486,9 +486,9 @@ function startFaceTracking() {
                         lastFrameTime = now;
                         
                         window.lastLandmarks = landmarks;
-                        
-                        if (window.RegionAnimator && avatarRegions) {
-                            window.RegionAnimator.animate(ctx, landmarks);
+
+                        if (window.RegionAnimator) {
+                            window.RegionAnimator.update(blend, landmarks);
                         }
                         
                         frameCount++;
@@ -500,8 +500,8 @@ function startFaceTracking() {
                         }
                     }
                 } else {
-                    if (window.RegionAnimator && avatarRegions) {
-                        window.RegionAnimator.animate(ctx);
+                    if (window.RegionAnimator) {
+                        window.RegionAnimator.update(prevBlend, null);
                     }
                 }
             } catch (error) {
@@ -526,8 +526,8 @@ function startBasicAnimation() {
     console.log('[spromoji] Starting basic animation loop (no camera)');
     
     const animateBasic = () => {
-        if (window.RegionAnimator && avatarRegions && animationEnabled) {
-            window.RegionAnimator.animate(ctx);
+        if (window.RegionAnimator && animationEnabled) {
+            window.RegionAnimator.update({}, null);
         }
         requestAnimationFrame(animateBasic);
     };
@@ -535,7 +535,7 @@ function startBasicAnimation() {
     animateBasic();
 }
 
-function startRecording() {
+async function startRecording() {
     if (isRecording) return;
     
     console.log('[spromoji] Starting recording...');
@@ -545,11 +545,21 @@ function startRecording() {
     startBtn.textContent = 'Recording...';
     startBtn.disabled = true;
     
-    const stream = avatarCanvas.captureStream(30);
-    const recorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: 300000
-    });
+    const canvasStream = avatarCanvas.captureStream(30);
+    let audioStream = null;
+    try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+        console.warn('[spromoji] Audio capture failed:', err);
+    }
+
+    const tracks = [...canvasStream.getVideoTracks()];
+    if (audioStream) tracks.push(...audioStream.getAudioTracks());
+    const stream = new MediaStream(tracks);
+
+    const mime = MediaRecorder.isTypeSupported('video/mp4;codecs=h264') ?
+        'video/mp4;codecs=h264' : 'video/webm;codecs=vp9,opus';
+    const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 300000 });
     
     const chunks = [];
     
@@ -563,31 +573,25 @@ function startRecording() {
         console.log('[spromoji] Recording complete');
         updateStatus('Processing video...');
         
-        const blob = new Blob(chunks, { type: 'video/webm' });
+        const blob = new Blob(chunks, { type: mime });
         const url = URL.createObjectURL(blob);
-        
-        const downloadLink = document.createElement('a');
-        downloadLink.href = url;
-        downloadLink.download = `spromoji-${Date.now()}.webm`;
-        downloadLink.textContent = 'Download Video';
-        downloadLink.style.cssText = `
-            display: inline-block;
-            margin: 10px;
-            padding: 12px 20px;
-            background: linear-gradient(45deg, #4CAF50, #45a049);
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        `;
-        
-        startBtn.parentNode.appendChild(downloadLink);
+
+        const dl = document.createElement('a');
+        dl.href = url;
+        dl.download = `spromoji-${Date.now()}.${mime.includes('mp4')?'mp4':'webm'}`;
+        document.body.appendChild(dl);
+        dl.click();
+        dl.remove();
+        URL.revokeObjectURL(url);
+
+        if (audioStream) {
+            audioStream.getTracks().forEach(t => t.stop());
+        }
         
         isRecording = false;
         startBtn.textContent = 'Start Recording';
         startBtn.disabled = false;
-        updateStatus('Recording complete! Download your video.');
+        updateStatus('Recording complete!');
     };
     
     recorder.start();
