@@ -48,7 +48,7 @@
 ```
 
 ### Color-Based Detection Logic:
-- Scans upper half of image for dark circular regions (eyes)
+- Scans upper half of the image for **dark or bright** circular regions (eyes)
 - Scans lower half for horizontal contrast patterns (mouth)
 - Uses adaptive block sizes based on image dimensions
 - Filters overlapping regions and sorts by position
