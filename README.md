@@ -33,3 +33,6 @@ Flask server will serve the WebApp on port `5000` by default.
 - Eye and mouth regions are clipped to smooth ellipses so scaling no longer shows square artifacts.
 - Video recording now includes microphone audio and automatically downloads when finished.
 - Facial features now react to head yaw and pitch for a subtle 3D effect.
+- Facial rig uses triangulated mesh driven by Face Landmarker blendshapes for accurate motion.
+- Avatar anchor points are stored in `avatarRig.json` and only need to be clicked once.
+- Recording chooses MP4/H.264 when available so downloads play everywhere.
