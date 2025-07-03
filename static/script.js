@@ -486,7 +486,7 @@ function startFaceTracking() {
                         lastFrameTime = now;
                         
                         window.lastLandmarks = landmarks;
-                        
+
                         if (window.RegionAnimator) {
                             window.RegionAnimator.update(blend, landmarks);
                         }
