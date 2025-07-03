@@ -535,7 +535,7 @@ function startBasicAnimation() {
     animateBasic();
 }
 
-function startRecording() {
+async function startRecording() {
     if (isRecording) return;
     
     console.log('[spromoji] Starting recording...');
@@ -545,9 +545,19 @@ function startRecording() {
     startBtn.textContent = 'Recording...';
     startBtn.disabled = true;
     
-    const stream = avatarCanvas.captureStream(30);
+    const canvasStream = avatarCanvas.captureStream(30);
+    let audioStream = null;
+    try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+        console.warn('[spromoji] Audio capture failed:', err);
+    }
+
+    const tracks = [...canvasStream.getVideoTracks()];
+    if (audioStream) tracks.push(...audioStream.getAudioTracks());
+    const stream = new MediaStream(tracks);
     const recorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9',
+        mimeType: 'video/webm;codecs=vp9,opus',
         videoBitsPerSecond: 300000
     });
     
@@ -565,29 +575,23 @@ function startRecording() {
         
         const blob = new Blob(chunks, { type: 'video/webm' });
         const url = URL.createObjectURL(blob);
-        
-        const downloadLink = document.createElement('a');
-        downloadLink.href = url;
-        downloadLink.download = `spromoji-${Date.now()}.webm`;
-        downloadLink.textContent = 'Download Video';
-        downloadLink.style.cssText = `
-            display: inline-block;
-            margin: 10px;
-            padding: 12px 20px;
-            background: linear-gradient(45deg, #4CAF50, #45a049);
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        `;
-        
-        startBtn.parentNode.appendChild(downloadLink);
+
+        const dl = document.createElement('a');
+        dl.href = url;
+        dl.download = `spromoji-${Date.now()}.webm`;
+        document.body.appendChild(dl);
+        dl.click();
+        dl.remove();
+        URL.revokeObjectURL(url);
+
+        if (audioStream) {
+            audioStream.getTracks().forEach(t => t.stop());
+        }
         
         isRecording = false;
         startBtn.textContent = 'Start Recording';
         startBtn.disabled = false;
-        updateStatus('Recording complete! Download your video.');
+        updateStatus('Recording complete!');
     };
     
     recorder.start();

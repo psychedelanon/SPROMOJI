@@ -30,3 +30,5 @@ Flask server will serve the WebApp on port `5000` by default.
 - Landmark smoothing uses the `LANDMARK_SMOOTHING` constant in `script.js` so the effect can be tuned.
 - Facial features now morph to the detected eye and mouth shape for a closer match to your real expressions.
 - Pupils and mouth position now follow your movements for natural blinking and talking.
+- Eye and mouth regions are clipped to smooth ellipses so scaling no longer shows square artifacts.
+- Video recording now includes microphone audio and automatically downloads when finished.

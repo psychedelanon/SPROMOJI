@@ -242,7 +242,9 @@
         ctx.translate(animState.globalTilt * 5, 0);
         ctx.scale(1, animState.eyeScaleLeft);
       }
-
+      ctx.beginPath();
+      ctx.ellipse(0, 0, le.w / 2, le.h / 2, 0, 0, Math.PI * 2);
+      ctx.clip();
       ctx.drawImage(r.leftEyeImg, -le.w/2, -le.h/2, le.w, le.h);
       ctx.globalAlpha = 1;
       ctx.restore();
@@ -264,6 +266,9 @@
         ctx.scale(1, animState.eyeScaleRight);
       }
 
+      ctx.beginPath();
+      ctx.ellipse(0, 0, re.w / 2, re.h / 2, 0, 0, Math.PI * 2);
+      ctx.clip();
       ctx.drawImage(r.rightEyeImg, -re.w/2, -re.h/2, re.w, re.h);
       ctx.globalAlpha = 1;
       ctx.restore();
@@ -285,6 +290,9 @@
         ctx.scale(1, animState.mouthScale);
       }
 
+      ctx.beginPath();
+      ctx.ellipse(0, 0, mo.w / 2, mo.h / 2, 0, 0, Math.PI * 2);
+      ctx.clip();
       ctx.drawImage(r.mouthImg, -mo.w/2, -mo.h/2, mo.w, mo.h);
       ctx.restore();
     }
