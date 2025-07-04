@@ -290,6 +290,19 @@ h1 {
     opacity: 0.9;
 }
 
+.error-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    background: #dc2626;
+    color: white;
+    padding: 8px;
+    font-weight: bold;
+    z-index: 50;
+    text-align: center;
+}
+
 @media (max-width: 768px) {
     body {
         padding: 10px;
