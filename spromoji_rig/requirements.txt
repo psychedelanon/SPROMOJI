@@ -3,3 +3,4 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.9        # file uploads
 pillow==10.3.0                 # image utils (already need this)
 numpy==1.26.4                  # cartoon heuristic
+boto3==1.34.96                 # S3 signed URL cache
