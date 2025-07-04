@@ -26,8 +26,16 @@
     const left = bbox(L.map(i=>lm[i]));
     const right= bbox(R.map(i=>lm[i]));
     const mouth= bbox(M.map(i=>lm[i]));
-    function expand(r,f){const cx=r.x+r.w/2,cy=r.y+r.h/2;return {x:cx-r.w*f/2,y:cy-r.h*f/2,w:r.w*f,h:r.h*f};}
-    return {leftEye:expand(left,PAD.eye),rightEye:expand(right,PAD.eye),mouth:expand(mouth,PAD.mouth)};
+    function expand(r,f){
+      const cx=r.x+r.w/2,cy=r.y+r.h/2;
+      const rx=r.w*f/2, ry=r.h*f/2;
+      return {x:cx-rx,y:cy-ry,w:rx*2,h:ry*2,cx,cy,rx,ry};
+    }
+    return {
+      leftEye: expand(left,PAD.eye),
+      rightEye: expand(right,PAD.eye),
+      mouth: expand(mouth,PAD.mouth)
+    };
   }
 
   function kmeans(points,k){
@@ -91,8 +99,14 @@
     if(eyePts.length<20) return null;
     const clusters=kmeans(eyePts,2).sort((a,b)=>a.cx-b.cx);
     const pad=5;
-    const left={x:Math.max(clusters[0].x-pad,0),y:Math.max(clusters[0].y-pad,0),w:Math.min(clusters[0].w+pad*2,w),h:Math.min(clusters[0].h+pad*2,h)};
-    const right={x:Math.max(clusters[1].x-pad,0),y:Math.max(clusters[1].y-pad,0),w:Math.min(clusters[1].w+pad*2,w),h:Math.min(clusters[1].h+pad*2,h)};
+    function ellipseFromCluster(c){
+      const cx=c.cx, cy=c.cy;
+      const rx=Math.max(c.w,10)/2 + pad;
+      const ry=Math.max(c.h,10)/2 + pad;
+      return {x:cx-rx,y:cy-ry,w:rx*2,h:ry*2,cx,cy,rx,ry};
+    }
+    const left=ellipseFromCluster(clusters[0]);
+    const right=ellipseFromCluster(clusters[1]);
     const midY=(clusters[0].cy+clusters[1].cy)/2;
     let bestY=Math.floor(midY),best=0;
     for(let y=Math.floor(midY);y<h-1;y++){
@@ -109,6 +123,10 @@
     if(rightEdge-leftEdge<10){leftEdge=w*0.3;rightEdge=w*0.7;}
     const mh=h*0.2;
     const mouth={x:Math.max(leftEdge-10,0),y:Math.max(bestY-mh/2,midY),w:Math.min(rightEdge-leftEdge+20,w),h:Math.min(mh,h-(bestY-mh/2))};
+    mouth.cx=mouth.x+mouth.w/2;
+    mouth.cy=mouth.y+mouth.h/2;
+    mouth.rx=mouth.w/2;
+    mouth.ry=mouth.h/2;
     return {leftEye:left,rightEye:right,mouth:mouth};
   }
 
