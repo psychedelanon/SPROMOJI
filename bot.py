@@ -51,6 +51,12 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/rig", methods=["POST"])
+def rig_endpoint():
+    """Placeholder rigging endpoint returning not implemented."""
+    return {"error": "not implemented"}, 501
+
+
 
 
 @app.route("/webhook", methods=["POST"])

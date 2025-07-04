@@ -189,7 +189,7 @@
   }
 
   window.RegionAnimator = {
-    async init(context, img, regions=null){
+    async init(context, img, regions=null, rigUrl='/static/avatarRig.json'){
       try {
         ctx = context;
         avatarImg = img;
@@ -204,7 +204,7 @@
           rig = null;
         } else {
           regionMode = false;
-          await loadRig('/static/avatarRig.json');
+          await loadRig(rigUrl);
           updateVertices();
         }
         render();
