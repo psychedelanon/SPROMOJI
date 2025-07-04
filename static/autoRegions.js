@@ -71,7 +71,7 @@
     });
   }
 
-  function detectCartoon(canvas){
+  function detectCartoonFeatures(canvas){
     const w=canvas.width,h=canvas.height;
     const ctx=canvas.getContext('2d');
     const data=ctx.getImageData(0,0,w,h).data;
@@ -132,6 +132,6 @@
 
   window.AutoRegions={
     fromLandmarks,
-    detectCartoon
+    detectCartoonFeatures
   };
 })();

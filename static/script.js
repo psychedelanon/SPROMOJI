@@ -6,7 +6,7 @@ console.log('[morph] SPROMOJI Facial Morphing starting...');
 
 // DOM elements (initialized in initializeApp)
 let cam, avatarCanvas, debugCanvas, debugOverlay, ctx, debugCtx, debugOverlayCtx;
-let avatarInput, startBtn, loadingIndicator, statusText, manualModeBtn;
+let avatarInput, startBtn, loadingIndicator, statusText, manualModeBtn, redoDetectBtn;
 let avatarImg = null;
 let avatarRegions = null;
 let avatarMesh = null;
@@ -14,12 +14,20 @@ let liveMesh = null;
 let isRecording = false;
 let animationEnabled = false;
 let currentAvatarURL = null;
+let currentAvatarHash = null;
 let lastFrameTime = 0;
 let frameCount = 0;
 let lastLogTime = 0;
 
 // Smoothing factor for landmark interpolation (0=no smoothing, 1=ignore new data)
 const LANDMARK_SMOOTHING = 0.6;
+
+async function computeAvatarHash(canvas){
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    const buf = await blob.arrayBuffer();
+    const hash = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
 
 const tg = window.Telegram?.WebApp;
 if (tg && tg.expand) tg.expand();
@@ -36,6 +44,7 @@ async function initializeApp() {
     loadingIndicator = document.getElementById('loading');
     statusText = document.getElementById('status');
     manualModeBtn = document.getElementById('manualModeBtn');
+    redoDetectBtn = document.getElementById('redoDetectBtn');
     
     if (!avatarCanvas || !debugCanvas) {
         console.error('[spromoji] Required canvas elements not found');
@@ -52,6 +61,9 @@ async function initializeApp() {
     
     if (manualModeBtn) {
         manualModeBtn.addEventListener('click', startManualSelection);
+    }
+    if (redoDetectBtn) {
+        redoDetectBtn.addEventListener('click', () => { tryAutoDetection(); });
     }
     
     startBtn.addEventListener('click', startRecording);
@@ -74,6 +86,7 @@ async function initializeApp() {
     } else {
         updateStatus('Upload an avatar image to begin');
         if (manualModeBtn) manualModeBtn.style.display = 'none';
+        if (redoDetectBtn) redoDetectBtn.style.display = 'none';
         hideLoading();
     }
 }
@@ -107,10 +120,43 @@ async function loadAvatar(src) {
         }
         
         ctx.drawImage(avatarImg, 0, 0, avatarCanvas.width, avatarCanvas.height);
-        
+
         console.log('[spromoji] Canvas dimensions set:', avatarCanvas.width, 'x', avatarCanvas.height);
-        
+
+        currentAvatarHash = await computeAvatarHash(avatarCanvas);
+        const cacheKey = 'rigCache_' + currentAvatarHash;
+        const cached = localStorage.getItem(cacheKey);
+
         await initializeMediaPipe();
+
+        if (cached) {
+            try {
+                const data = JSON.parse(cached);
+                if (data.rigUrl) {
+                    const ok = await window.RegionAnimator.init(ctx, avatarImg, null, data.rigUrl);
+                    if (ok) {
+                        animationEnabled = true;
+                        playDemo();
+                        await initPreview();
+                        updateStatus('Avatar loaded - try making expressions!');
+                        if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
+                        return;
+                    }
+                } else if (data.regions) {
+                    const ok = await window.RegionAnimator.init(ctx, avatarImg, data.regions);
+                    if (ok) {
+                        animationEnabled = true;
+                        playDemo();
+                        await initPreview();
+                        updateStatus('Avatar loaded - try making expressions!');
+                        if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
+                        return;
+                    }
+                }
+            } catch(e){
+                console.warn('[spromoji] Failed to load cached rig', e);
+            }
+        }
         
         // Try to initialize the mesh-based animation system
         let meshSuccess = false;
@@ -121,6 +167,8 @@ async function loadAvatar(src) {
         if (meshSuccess) {
             console.log('[spromoji] Using mesh-based animation system');
             animationEnabled = true;
+            playDemo();
+            if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
             await initPreview();
             updateStatus('Avatar loaded - try making expressions!');
         } else {
@@ -131,6 +179,7 @@ async function loadAvatar(src) {
                 updateStatus('Auto-detection failed. Use manual selection.');
                 console.log('[spromoji] Auto-detection failed, manual mode available');
                 if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
+                if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
                 await initPreview();
             }
         }
@@ -231,10 +280,29 @@ async function tryAutoDetection() {
     debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
 
     try {
-        const cartoonRegions = window.AutoRegions.detectCartoon(avatarCanvas);
-        if (cartoonRegions) {
-            console.log('[spromoji] Cartoon detection succeeded');
-            avatarRegions = cartoonRegions;
+        avatarRegions = null;
+
+        // First try MediaPipe detection on the avatar image
+        if (avatarMesh) {
+            console.log('[spromoji] Pre-flight MediaPipe detection...');
+            const mpRes = avatarMesh.detect(avatarCanvas);
+            if (mpRes && mpRes.faceLandmarks && mpRes.faceLandmarks.length > 0) {
+                const landmarks = mpRes.faceLandmarks[0];
+                console.log('[spromoji] MediaPipe detected', landmarks.length, 'landmarks');
+                avatarRegions = window.AutoRegions.fromLandmarks(landmarks, avatarCanvas.width, avatarCanvas.height);
+            }
+        }
+
+        // If MediaPipe didn't work, fall back to heuristic detection
+        if (!avatarRegions) {
+            const cartoonRegions = window.AutoRegions.detectCartoonFeatures(avatarCanvas);
+            if (cartoonRegions) {
+                avatarRegions = cartoonRegions;
+                console.log('[spromoji] Cartoon heuristic succeeded');
+            }
+        }
+
+        if (avatarRegions) {
             
             Object.values(avatarRegions).forEach(r => {
                 r.w = Math.max(r.w, 20);
@@ -246,6 +314,11 @@ async function tryAutoDetection() {
             });
             
             console.table(avatarRegions);
+
+            if (currentAvatarHash) {
+                const cacheKey = 'rigCache_' + currentAvatarHash;
+                localStorage.setItem(cacheKey, JSON.stringify({regions: avatarRegions}));
+            }
             
             if (window.RegionAnimator) {
                 window.RegionAnimator.init(ctx, avatarImg, avatarRegions);
@@ -258,9 +331,10 @@ async function tryAutoDetection() {
             animationEnabled = true;
             debugCanvas.style.display = 'none';
             updateStatus('Features detected - try blinking & talking!');
-            
+
+            playDemo();
             await initPreview();
-            
+
             if (!cam || !cam.srcObject) {
                 startBasicAnimation();
             }
@@ -268,55 +342,35 @@ async function tryAutoDetection() {
             return true;
         }
 
-        if (avatarMesh) {
-            console.log('[spromoji] Trying MediaPipe detection...');
-            const results = avatarMesh.detect(avatarCanvas);
-            
-            if (results && results.faceLandmarks && results.faceLandmarks.length > 0) {
-                const landmarks = results.faceLandmarks[0];
-                console.log('[spromoji] MediaPipe detected', landmarks.length, 'landmarks');
-                
-                avatarRegions = window.AutoRegions.fromLandmarks(landmarks, avatarCanvas.width, avatarCanvas.height);
-                
-                Object.values(avatarRegions).forEach(r => {
-                    r.w = Math.max(r.w, 20);
-                    r.h = Math.max(r.h, 20);
-                    if (r.radiusX) r.radiusX = r.w / 2;
-                    if (r.radiusY) r.radiusY = r.h / 2;
-                    if (r.rx) r.rx = r.w / 2;
-                    if (r.ry) r.ry = r.h / 2;
-                });
-                
-                console.table(avatarRegions);
-                
-                if (window.RegionAnimator) {
-                    window.RegionAnimator.init(ctx, avatarImg, avatarRegions);
-                    console.log('[spromoji] RegionAnimator initialized with MediaPipe regions');
-                } else {
-                    console.error('[spromoji] RegionAnimator not available!');
-                    return false;
+        if (!avatarRegions) {
+            console.log('[spromoji] Heuristics failed - requesting rig from server...');
+            const blob = await new Promise(res => avatarCanvas.toBlob(res, 'image/png'));
+            const resp = await fetch('/rig', { method:'POST', body: blob });
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data.rigUrl) {
+                    if (currentAvatarHash) {
+                        const ck = 'rigCache_' + currentAvatarHash;
+                        localStorage.setItem(ck, JSON.stringify({rigUrl: data.rigUrl}));
+                    }
+                    await window.RegionAnimator.init(ctx, avatarImg, null, data.rigUrl);
+                    animationEnabled = true;
+                    debugCanvas.style.display = 'none';
+                    updateStatus('Features detected - try blinking & talking!');
+                    playDemo();
+                    if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
+                    await initPreview();
+                    if (!cam || !cam.srcObject) startBasicAnimation();
+                    return true;
                 }
-                
-                animationEnabled = true;
-                debugCanvas.style.display = 'none';
-                updateStatus('Features detected - try blinking & talking!');
-                
-                await initPreview();
-                
-                if (!cam || !cam.srcObject) {
-                    startBasicAnimation();
-                }
-                
-                return true;
             }
-        } else {
-            console.log('[spromoji] MediaPipe not initialized, skipping...');
         }
-        
+
         console.warn('[spromoji] Auto-detection failed');
         animationEnabled = false;
         updateStatus('Auto-detection failed - please select features manually');
         if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
+        if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
         return false;
         
     } catch (error) {
@@ -324,6 +378,7 @@ async function tryAutoDetection() {
         animationEnabled = false;
         updateStatus('Detection error - please select features manually');
         if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
+        if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
         return false;
     }
 }
@@ -333,6 +388,7 @@ async function startManualSelection() {
     updateStatus('Click to select features manually...');
     
     if (manualModeBtn) manualModeBtn.style.display = 'none';
+    if (redoDetectBtn) redoDetectBtn.style.display = 'none';
     
     try {
         const regions = await showManualPicker();
@@ -572,6 +628,25 @@ function startBasicAnimation() {
     };
     
     animateBasic();
+}
+
+function playDemo(duration=3000){
+    let elapsed=0;
+    const step=()=>{
+        if(elapsed>duration) return;
+        const blink=Math.abs(Math.sin(elapsed/300*Math.PI));
+        const jaw=0.2+0.1*Math.sin(elapsed/150*Math.PI);
+        if(window.RegionAnimator){
+            window.RegionAnimator.update({
+                eyeBlinkLeft:blink,
+                eyeBlinkRight:blink,
+                jawOpen:jaw
+            }, null);
+        }
+        elapsed+=80;
+        setTimeout(step,80);
+    };
+    step();
 }
 
 async function startRecording() {
