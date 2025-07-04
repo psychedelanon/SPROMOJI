@@ -29,6 +29,53 @@ async function computeAvatarHash(canvas){
     return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 
+// Resize the avatar canvas for rig upload if needed
+async function prepareRigBlob(canvas){
+    const originalBlob = await new Promise(r=>canvas.toBlob(r, 'image/png'));
+    if(originalBlob.size <= 20 * 1024 * 1024){
+        return {canvas, blob: originalBlob};
+    }
+    const max = 512;
+    const scale = max / Math.max(canvas.width, canvas.height);
+    const tmp = document.createElement('canvas');
+    tmp.width = Math.round(canvas.width * scale);
+    tmp.height = Math.round(canvas.height * scale);
+    tmp.getContext('2d').drawImage(canvas, 0, 0, tmp.width, tmp.height);
+    const scaledBlob = await new Promise(r=>tmp.toBlob(r, 'image/png'));
+    return {canvas: tmp, blob: scaledBlob};
+}
+
+function polysToRegions(polys){
+    const map = {eyeL:'leftEye', eyeR:'rightEye', mouth:'mouth'};
+    const out = {};
+    polys.forEach(f=>{
+        const name = map[f.type] || f.type;
+        if(!f.poly || !f.poly.length) return;
+        let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+        f.poly.forEach(([x,y])=>{
+            if(x<minX) minX=x;
+            if(x>maxX) maxX=x;
+            if(y<minY) minY=y;
+            if(y>maxY) maxY=y;
+        });
+        const w = avatarCanvas.width;
+        const h = avatarCanvas.height;
+        const cx=(minX+maxX)/2;
+        const cy=(minY+maxY)/2;
+        out[name] = {
+            x: minX * w,
+            y: minY * h,
+            w: (maxX-minX) * w,
+            h: (maxY-minY) * h,
+            cx: cx * w,
+            cy: cy * h,
+            rx: (maxX-minX) * w / 2,
+            ry: (maxY-minY) * h / 2
+        };
+    });
+    return out;
+}
+
 const tg = window.Telegram?.WebApp;
 if (tg && tg.expand) tg.expand();
 
@@ -344,16 +391,19 @@ async function tryAutoDetection() {
 
         if (!avatarRegions) {
             console.log('[spromoji] Heuristics failed - requesting rig from server...');
-            const blob = await new Promise(res => avatarCanvas.toBlob(res, 'image/png'));
-            const resp = await fetch('/rig', { method:'POST', body: blob });
+            const {blob} = await prepareRigBlob(avatarCanvas);
+            const form = new FormData();
+            form.append('file', blob, 'avatar.png');
+            const resp = await fetch('/rig', { method:'POST', body: form });
             if (resp.ok) {
                 const data = await resp.json();
-                if (data.rigUrl) {
+                if (data.rig) {
                     if (currentAvatarHash) {
                         const ck = 'rigCache_' + currentAvatarHash;
-                        localStorage.setItem(ck, JSON.stringify({rigUrl: data.rigUrl}));
+                        localStorage.setItem(ck, JSON.stringify({rig: data.rig}));
                     }
-                    await window.RegionAnimator.init(ctx, avatarImg, null, data.rigUrl);
+                    const regions = polysToRegions(data.rig);
+                    await window.RegionAnimator.init(ctx, avatarImg, regions);
                     animationEnabled = true;
                     debugCanvas.style.display = 'none';
                     updateStatus('Features detected - try blinking & talking!');

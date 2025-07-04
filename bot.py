@@ -4,6 +4,7 @@ import asyncio
 import threading
 import urllib.parse
 from dotenv import load_dotenv
+import requests
 
 from flask import Flask, request, render_template
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
@@ -16,6 +17,8 @@ load_dotenv()
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "http://localhost:5000/")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+RIG_SERVICE_URL = os.environ.get("RIG_SERVICE_URL", "http://localhost:8000/rig")
+RIG_API_KEY = os.environ.get("RIG_API_KEY", "")
 
 # Initialize the Telegram application
 application = Application.builder().token(TOKEN).build()
@@ -45,6 +48,13 @@ def ensure_js_mime(response):
     return response
 
 
+@app.after_request
+def add_hsts_header(response):
+    """Force HTTPS on supported browsers."""
+    response.headers.setdefault('Strict-Transport-Security', 'max-age=63072000; includeSubDomains')
+    return response
+
+
 @app.route("/")
 def index():
     """Serve the WebApp's main page."""
@@ -53,8 +63,18 @@ def index():
 
 @app.route("/rig", methods=["POST"])
 def rig_endpoint():
-    """Placeholder rigging endpoint returning not implemented."""
-    return {"error": "not implemented"}, 501
+    """Proxy rig requests to the dedicated service."""
+    try:
+        if 'file' in request.files:
+            f = request.files['file']
+            files = {'file': (f.filename, f.stream.read(), f.mimetype)}
+            resp = requests.post(RIG_SERVICE_URL, files=files, headers={'X-Api-Key': RIG_API_KEY})
+        else:
+            resp = requests.post(RIG_SERVICE_URL, data=request.get_data(), headers={'Content-Type': request.content_type, 'X-Api-Key': RIG_API_KEY})
+        return (resp.content, resp.status_code, {'Content-Type':'application/json'})
+    except Exception as e:
+        print(f"Rig proxy error: {e}")
+        return {"error": "rig unavailable"}, 502
 
 
 @app.route("/telemetry", methods=["POST"])
