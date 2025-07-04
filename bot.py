@@ -3,10 +3,9 @@ import os
 import asyncio
 import threading
 import urllib.parse
-import requests
 from dotenv import load_dotenv
 
-from flask import Flask, request, render_template, make_response
+from flask import Flask, request, render_template
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -27,9 +26,6 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 loop = None
 loop_thread = None
 
-# File cache for avatar proxy - maps file_unique_id to file_path
-file_cache = {}
-user_photo_cache = {}
 
 
 def run_async(coro):
@@ -55,39 +51,6 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/avatar/<uid>.jpg")
-def serve_avatar(uid: str):
-    """Proxy avatar images from Telegram to avoid CORS issues."""
-    # uid == Telegram file_unique_id
-    tg_path = file_cache.get(uid)
-    if not tg_path:
-        print(f"Avatar not found in cache: {uid}")
-        return "Not Found", 404
-    
-    # Check if tg_path is already a full URL or just a path
-    if tg_path.startswith('https://'):
-        tg_url = tg_path
-    else:
-        tg_url = f"https://api.telegram.org/file/bot{TOKEN}/{tg_path}"
-    
-    print(f"Proxying avatar: {tg_url}")
-    
-    try:
-        resp = requests.get(tg_url, timeout=10)
-        if not resp.ok:
-            print(f"Upstream error fetching avatar: {resp.status_code}")
-            return "Upstream error", 502
-        
-        out = make_response(resp.content)
-        out.headers["Content-Type"] = "image/jpeg"
-        out.headers["Cache-Control"] = "public,max-age=86400"
-        out.headers["Access-Control-Allow-Origin"] = "*"
-        print(f"Avatar served successfully: {len(resp.content)} bytes")
-        return out
-        
-    except Exception as e:
-        print(f"Error proxying avatar: {e}")
-        return "Server Error", 500
 
 
 @app.route("/webhook", methods=["POST"])
@@ -103,56 +66,19 @@ def webhook():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a button that opens the WebApp with the user's profile photo."""
+    """Send the user a button that opens the WebApp."""
 
-    avatar_url = None
-    user_id = update.effective_user.id
-    
-    try:
-        # Get the most recent profile photo (limit=1 gets the newest)
-        photos = await context.bot.get_user_profile_photos(user_id, limit=1, offset=0)
-        if photos.total_count > 0:
-            # Get the highest resolution version of the most recent photo
-            file_id = photos.photos[0][-1].file_id  # -1 gets highest resolution
-            file = await context.bot.get_file(file_id)
-            
-            print(f"Profile photo found for user {user_id}: {file.file_unique_id}")
-            
-            # Clean up old cache entry if user has changed their photo
-            prev_uid = user_photo_cache.get(user_id)
-            if prev_uid and prev_uid != file.file_unique_id:
-                file_cache.pop(prev_uid, None)
-
-            # Cache the file path for the proxy route and track user's current photo
-            user_photo_cache[user_id] = file.file_unique_id
-            file_cache[file.file_unique_id] = file.file_path
-            
-            # Use our proxy URL with cache-buster timestamp to ensure fresh image
-            import time
-            avatar_url = f"/avatar/{file.file_unique_id}.jpg?t={int(time.time())}"
-            print(f"Avatar URL generated: {avatar_url}")
-        else:
-            print(f"No profile photos found for user {user_id}")
-            
-    except Exception as e:
-        print(f"Error fetching profile photo for user {user_id}: {e}")
-
-    # Build WebApp URL
-    url = WEB_APP_URL
-    if avatar_url:
-        encoded = urllib.parse.quote_plus(avatar_url)
-        separator = '&' if '?' in url else '?'
-        url = f"{url}{separator}avatar={encoded}"
-
-    keyboard = [[KeyboardButton("🚀 Open Spromoji", web_app=WebAppInfo(url=url))]]
+    keyboard = [
+        [KeyboardButton("🚀 Open Spromoji", web_app=WebAppInfo(url=WEB_APP_URL))]
+    ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
-    welcome_text = "🎭 Welcome to Spromoji!\n\nMirror your expressions with your avatar in real-time."
-    if avatar_url:
-        welcome_text += "\n\n✅ Your Telegram profile photo will be loaded automatically."
-    else:
-        welcome_text += "\n\n📸 You can upload any image as your avatar."
-    
+
+    welcome_text = (
+        "🎭 Welcome to Spromoji!\n\n"
+        "Mirror your expressions with your avatar in real-time.\n\n"
+        "📸 Upload an image to begin."
+    )
+
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 
