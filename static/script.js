@@ -55,9 +55,15 @@ async function initializeApp() {
     }
     
     startBtn.addEventListener('click', startRecording);
-    
+
     const urlParams = new URLSearchParams(window.location.search);
     const avatarParam = urlParams.get('avatar');
+    const debugMode = urlParams.get('debug') === '1';
+
+    if (!debugMode) {
+        debugCanvas.style.display = 'none';
+        if (debugOverlay) debugOverlay.style.display = 'none';
+    }
     
     if (avatarParam) {
         console.log('[spromoji] Loading avatar from URL:', avatarParam);
