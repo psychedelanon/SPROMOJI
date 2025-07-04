@@ -62,16 +62,18 @@ def index():
 
 
 @app.route("/rig", methods=["POST"])
-def rig_endpoint():
+def rig_proxy():
     """Proxy rig requests to the dedicated service."""
     try:
-        if 'file' in request.files:
-            f = request.files['file']
-            files = {'file': (f.filename, f.stream.read(), f.mimetype)}
-            resp = requests.post(RIG_SERVICE_URL, files=files, headers={'X-Api-Key': RIG_API_KEY})
-        else:
-            resp = requests.post(RIG_SERVICE_URL, data=request.get_data(), headers={'Content-Type': request.content_type, 'X-Api-Key': RIG_API_KEY})
-        return (resp.content, resp.status_code, {'Content-Type':'application/json'})
+        rig_url = os.environ.get("RIG_URL", RIG_SERVICE_URL)
+        headers = {"X-Api-Key": os.environ.get("RIG_API_KEY", RIG_API_KEY)}
+        resp = requests.post(
+            rig_url,
+            data=request.files["file"].read() if "file" in request.files else request.get_data(),
+            headers=headers,
+            timeout=10,
+        )
+        return (resp.content, resp.status_code, resp.headers.items())
     except Exception as e:
         print(f"Rig proxy error: {e}")
         return {"error": "rig unavailable"}, 502

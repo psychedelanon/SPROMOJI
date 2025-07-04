@@ -1,18 +1,13 @@
 from pathlib import Path
-import importlib.util
 
 import pytest
 from fastapi.testclient import TestClient
 
-spec = importlib.util.spec_from_file_location(
-    "spromoji_rig.main", Path(__file__).parents[1] / "spromoji-rig" / "main.py"
-)
-main = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(main)
+from spromoji_rig.main import app
 
-client = TestClient(main.app)
+client = TestClient(app)
 
-fixtures_dir = Path(main.__file__).parent / "fixtures" / "avatars"
+fixtures_dir = Path(__file__).parents[1] / "spromoji_rig" / "fixtures" / "avatars"
 
 
 @pytest.mark.parametrize("avatar_file", sorted(fixtures_dir.glob("*.bin")))
@@ -24,7 +19,6 @@ def test_fixture_rigs(avatar_file):
     assert "rig" in payload
     assert isinstance(payload["rig"], list)
     assert len(payload["rig"]) == 3
-    # ensure polygons are lists of points
     for region in payload["rig"]:
         assert "poly" in region
         assert isinstance(region["poly"], list)
