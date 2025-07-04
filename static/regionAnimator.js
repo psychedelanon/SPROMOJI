@@ -212,7 +212,23 @@
         return true;
       } catch (error) {
         console.error('[RegionAnimator] Mesh system failed to initialize:', error);
-        console.log('[RegionAnimator] Falling back to region-based animation...');
+        if(window.rum && window.rum.trackError){
+          window.rum.trackError(error);
+        }
+        const banner = document.getElementById('errorBanner');
+        if(banner){
+          banner.textContent = 'Rig load failed - using fallback';
+          banner.style.display = 'block';
+        }
+        regionMode = true;
+        const w = img.width, h = img.height;
+        regionData = {
+          leftEye: {cx:w*0.3, cy:h*0.35, rx:w*0.1, ry:h*0.1},
+          rightEye:{cx:w*0.7, cy:h*0.35, rx:w*0.1, ry:h*0.1},
+          mouth:   {cx:w*0.5, cy:h*0.7,  rx:w*0.25, ry:h*0.15}
+        };
+        rig = null;
+        render();
         return false;
       }
     },

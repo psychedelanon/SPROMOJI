@@ -57,6 +57,18 @@ def rig_endpoint():
     return {"error": "not implemented"}, 501
 
 
+@app.route("/telemetry", methods=["POST"])
+def telemetry_endpoint():
+    """Receive simple FPS telemetry from clients."""
+    try:
+        data = request.get_json(force=True)
+        print("Telemetry:", data)
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"Telemetry error: {e}")
+        return {"error": "bad request"}, 400
+
+
 
 
 @app.route("/webhook", methods=["POST"])

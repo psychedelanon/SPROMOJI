@@ -742,3 +742,27 @@ if (document.readyState === 'loading') {
 } else {
     initializeApp();
 }
+
+// simple FPS telemetry
+(function(){
+    let t0 = performance.now();
+    let frames = 0;
+    async function postTelem(fps){
+        try {
+            await fetch('/telemetry', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({fps})});
+        } catch(e){
+            console.warn('telemetry error', e);
+        }
+    }
+    function tick(){
+        frames++;
+        const now = performance.now();
+        if (now - t0 > 10000){
+            postTelem(frames/10);
+            t0 = now;
+            frames = 0;
+        }
+        requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+})();
