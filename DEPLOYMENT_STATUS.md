@@ -44,8 +44,7 @@
   - Fixed manual selection workflow
 
 ### 3. **Avatar Loading IMPROVED**
-- ✅ Better Telegram profile photo fetching with cache invalidation
-- ✅ Enhanced error handling for missing or private profile photos
+- ✅ Simplified workflow using manual image uploads
 - ✅ Clearer user feedback during loading process
 - ✅ Robust fallback to manual upload
 
@@ -219,8 +218,7 @@ All critical technical issues have been resolved, and the viral HarryPotterObama
 ## 🎯 **Current Status: FUNCTIONAL**
 
 The app now provides a clean, working experience:
-1. ✅ Loads Telegram profile photos correctly
-2. ✅ Supports custom image uploads
+1. ✅ Supports custom image uploads
 3. ✅ Animates avatars in real-time (eyes blink, mouth moves)
 4. ✅ Offers manual region selection when auto-detection fails
 5. ✅ Records 5-second animated videos

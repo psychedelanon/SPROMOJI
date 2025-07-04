@@ -60,7 +60,10 @@ async function initializeApp() {
     const avatarParam = urlParams.get('avatar');
     const debugMode = urlParams.get('debug') === '1';
 
-    if (!debugMode) {
+    if (debugMode) {
+        debugCanvas.style.display = 'block';
+        if (debugOverlay) debugOverlay.style.display = 'block';
+    } else {
         debugCanvas.style.display = 'none';
         if (debugOverlay) debugOverlay.style.display = 'none';
     }
