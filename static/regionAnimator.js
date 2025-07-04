@@ -12,6 +12,8 @@
   let blendState = {};
   let orientState = { yaw:0, pitch:0 };
   let featureMeshes = null;
+  let regionMode = false;
+  let regionData = null;
 
   function lerp(a,b,t){ return a*(1-t)+b*t; }
 
@@ -100,6 +102,30 @@
     });
   }
 
+  function toFeature(r){
+    if(!r) return null;
+    return {
+      cx: r.cx ?? r.centerX ?? (r.x + r.w/2),
+      cy: r.cy ?? r.centerY ?? (r.y + r.h/2),
+      rx: r.rx ?? r.radiusX ?? (r.w/2),
+      ry: r.ry ?? r.radiusY ?? (r.h/2)
+    };
+  }
+
+  function drawFeature(f, sx=1, sy=1){
+    if(!f) return;
+    ctx.save();
+    const offX = orientState.yaw*4;
+    const offY = orientState.pitch*4;
+    ctx.translate(f.cx + offX, f.cy + offY);
+    ctx.scale(sx, sy);
+    ctx.beginPath();
+    ctx.ellipse(0,0,f.rx,f.ry,0,0,Math.PI*2);
+    ctx.clip();
+    ctx.drawImage(avatarImg, -f.cx, -f.cy);
+    ctx.restore();
+  }
+
   function applyBlendshapes(bs){
     if(!featureMeshes) return;
     const blinkL = bs['eyeBlinkLeft']||0;
@@ -115,12 +141,25 @@
   function render(){
     if(!ctx) return;
     ctx.clearRect(0,0,ctx.canvas.width, ctx.canvas.height);
+
+    if(regionMode){
+      ctx.drawImage(avatarImg,0,0);
+      const blinkL = blendState['eyeBlinkLeft']||0;
+      const blinkR = blendState['eyeBlinkRight']||0;
+      const jaw = blendState['jawOpen']||0;
+      const smile = blendState['mouthSmile']||0;
+
+      drawFeature(regionData.leftEye,1,Math.max(0.2,1-blinkL));
+      drawFeature(regionData.rightEye,1,Math.max(0.2,1-blinkR));
+      drawFeature(regionData.mouth,1,1+jaw*0.7+smile*0.3);
+      return;
+    }
+
     ctx.save();
     ctx.translate(0,0);
     triangles.forEach(t=>drawTriangle(t));
     ctx.restore();
 
-    // fake depth layer
     ctx.save();
     ctx.globalAlpha = 0.5;
     ctx.translate(-DEPTH_OFFSET*orientState.yaw, -DEPTH_OFFSET*orientState.pitch);
@@ -156,11 +195,18 @@
         avatarImg = img;
         console.log('[RegionAnimator] Initializing mesh system...');
         if(regions){
-          rig = rigFromRegions(regions, img);
+          regionMode = true;
+          regionData = {
+            leftEye: toFeature(regions.leftEye),
+            rightEye: toFeature(regions.rightEye),
+            mouth: toFeature(regions.mouth)
+          };
+          rig = null;
         } else {
+          regionMode = false;
           await loadRig('/static/avatarRig.json');
+          updateVertices();
         }
-        updateVertices();
         render();
         console.log('[RegionAnimator] Mesh system initialized successfully!');
         return true;
@@ -176,11 +222,17 @@
     reset(){
       blendState = {};
       orientState = {yaw:0,pitch:0};
-    },
+      regionData = null;
+      regionMode = false;
+      },
     update(blend, landmarks){
-      if(!rig) return;
-      applyBlend(blend);
-      applyBlendshapes(blend);
+      if(regionMode){
+        Object.assign(blendState, blend);
+      } else {
+        if(!rig) return;
+        applyBlend(blend);
+        applyBlendshapes(blend);
+      }
       if(landmarks){
         const yaw = (landmarks[1].x - ((landmarks[33].x+landmarks[263].x)/2)) / (landmarks[263].x - landmarks[33].x);
         const top = landmarks[10].y;
@@ -190,7 +242,9 @@
         orientState.yaw = lerp(orientState.yaw, yaw, ROT_SMOOTH);
         orientState.pitch = lerp(orientState.pitch, pitch, ROT_SMOOTH);
       }
-      updateVertices();
+      if(!regionMode){
+        updateVertices();
+      }
       render();
     }
   };

@@ -331,7 +331,9 @@ function completeSelection() {
         processedRegions[name] = {
             ...region,
             centerX: region.x + region.w / 2,
-            centerY: region.y + region.h / 2
+            centerY: region.y + region.h / 2,
+            radiusX: region.w / 2,
+            radiusY: region.h / 2
         };
     }
     

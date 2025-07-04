@@ -239,6 +239,10 @@ async function tryAutoDetection() {
             Object.values(avatarRegions).forEach(r => {
                 r.w = Math.max(r.w, 20);
                 r.h = Math.max(r.h, 20);
+                if (r.radiusX) r.radiusX = r.w / 2;
+                if (r.radiusY) r.radiusY = r.h / 2;
+                if (r.rx) r.rx = r.w / 2;
+                if (r.ry) r.ry = r.h / 2;
             });
             
             console.table(avatarRegions);
@@ -277,6 +281,10 @@ async function tryAutoDetection() {
                 Object.values(avatarRegions).forEach(r => {
                     r.w = Math.max(r.w, 20);
                     r.h = Math.max(r.h, 20);
+                    if (r.radiusX) r.radiusX = r.w / 2;
+                    if (r.radiusY) r.radiusY = r.h / 2;
+                    if (r.rx) r.rx = r.w / 2;
+                    if (r.ry) r.ry = r.h / 2;
                 });
                 
                 console.table(avatarRegions);
@@ -333,6 +341,10 @@ async function startManualSelection() {
         Object.values(avatarRegions).forEach(r => {
             r.w = Math.max(r.w, 20);
             r.h = Math.max(r.h, 20);
+            if (r.radiusX) r.radiusX = r.w / 2;
+            if (r.radiusY) r.radiusY = r.h / 2;
+            if (r.rx) r.rx = r.w / 2;
+            if (r.ry) r.ry = r.h / 2;
         });
         
         console.table(avatarRegions);
