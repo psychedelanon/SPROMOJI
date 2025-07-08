@@ -194,14 +194,27 @@
         ctx = context;
         avatarImg = img;
         console.log('[RegionAnimator] Initializing mesh system...');
-        if(regions){
-          regionMode = true;
-          regionData = {
-            leftEye: toFeature(regions.leftEye),
-            rightEye: toFeature(regions.rightEye),
-            mouth: toFeature(regions.mouth)
+      if(regions){
+          const custom = rigFromRegions(regions, img);
+          rig = custom;
+          vertices = custom.vertices.map(v=>({
+            id:v.id,
+            u:v.u,
+            v:v.v,
+            baseX:0,
+            baseY:0,
+            x:0,
+            y:0,
+            weights:v.weights||{}
+          }));
+          triangles = custom.triangles;
+          featureMeshes = {
+            L_EYE:{vertices:vertices.slice(0,2)},
+            R_EYE:{vertices:vertices.slice(2,4)},
+            MOUTH:{vertices:vertices.slice(4,7)}
           };
-          rig = null;
+          regionMode = false;
+          updateVertices();
         } else {
           regionMode = false;
           await loadRig(rigUrl);
