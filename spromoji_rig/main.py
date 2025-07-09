@@ -111,19 +111,148 @@ def sha256(data: bytes) -> str:
 
 def detect_cartoon_features_fallback(w: int, h: int) -> Optional[dict]:
     """Fallback cartoon feature detection without PIL."""
-    # Return default regions as fallback
+    # Return proportional regions based on common avatar layouts
     return {
-        "leftEye": {"x": w*0.3, "y": h*0.35, "w": w*0.1, "h": h*0.1, "cx": w*0.35, "cy": h*0.4, "rx": w*0.05, "ry": h*0.05},
-        "rightEye": {"x": w*0.6, "y": h*0.35, "w": w*0.1, "h": h*0.1, "cx": w*0.65, "cy": h*0.4, "rx": w*0.05, "ry": h*0.05},
-        "mouth": {"x": w*0.4, "y": h*0.65, "w": w*0.2, "h": h*0.1, "cx": w*0.5, "cy": h*0.7, "rx": w*0.1, "ry": h*0.05}
+        "leftEye": {"x": w*0.25, "y": h*0.35, "w": w*0.15, "h": h*0.12, "cx": w*0.325, "cy": h*0.41, "rx": w*0.075, "ry": h*0.06},
+        "rightEye": {"x": w*0.6, "y": h*0.35, "w": w*0.15, "h": h*0.12, "cx": w*0.675, "cy": h*0.41, "rx": w*0.075, "ry": h*0.06},
+        "mouth": {"x": w*0.35, "y": h*0.65, "w": w*0.3, "h": h*0.15, "cx": w*0.5, "cy": h*0.725, "rx": w*0.15, "ry": h*0.075}
     }
 
 
+def get_image_dimensions(data: bytes) -> tuple:
+    """Get image dimensions from image data without PIL."""
+    try:
+        # Try to read basic image format headers
+        if data[:4] == b'\x89PNG':
+            # PNG format
+            if len(data) > 24:
+                width = int.from_bytes(data[16:20], byteorder='big')
+                height = int.from_bytes(data[20:24], byteorder='big')
+                return width, height
+        elif data[:2] == b'\xff\xd8':
+            # JPEG format - basic dimension extraction
+            pos = 2
+            while pos < len(data) - 8:
+                if data[pos] == 0xff and data[pos + 1] == 0xc0:
+                    height = int.from_bytes(data[pos + 5:pos + 7], byteorder='big')
+                    width = int.from_bytes(data[pos + 7:pos + 9], byteorder='big')
+                    return width, height
+                pos += 1
+        elif data[:6] == b'GIF87a' or data[:6] == b'GIF89a':
+            # GIF format
+            if len(data) > 10:
+                width = int.from_bytes(data[6:8], byteorder='little')
+                height = int.from_bytes(data[8:10], byteorder='little')
+                return width, height
+        elif data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+            # WebP format
+            if len(data) > 30:
+                if data[12:16] == b'VP8 ':
+                    # VP8 format
+                    width = int.from_bytes(data[26:28], byteorder='little') & 0x3fff
+                    height = int.from_bytes(data[28:30], byteorder='little') & 0x3fff
+                    return width, height
+                elif data[12:16] == b'VP8L':
+                    # VP8L format
+                    bits = int.from_bytes(data[21:25], byteorder='little')
+                    width = (bits & 0x3fff) + 1
+                    height = ((bits >> 14) & 0x3fff) + 1
+                    return width, height
+    except Exception:
+        pass
+    
+    # Default fallback dimensions
+    return 512, 512
+
+
+def analyze_image_content(data: bytes) -> dict:
+    """Basic image content analysis without PIL."""
+    try:
+        # Simple histogram analysis for basic feature detection
+        if len(data) < 1000:
+            return {}
+        
+        # Sample pixels throughout the image data
+        sample_size = min(10000, len(data) // 4)
+        sample_step = len(data) // sample_size
+        
+        dark_pixels = 0
+        light_pixels = 0
+        color_pixels = 0
+        
+        for i in range(0, len(data), sample_step):
+            if i + 2 < len(data):
+                # Approximate RGB values (this is very rough)
+                r = data[i] if i < len(data) else 128
+                g = data[i + 1] if i + 1 < len(data) else 128
+                b = data[i + 2] if i + 2 < len(data) else 128
+                
+                # Simple grayscale conversion
+                gray = (r * 0.299 + g * 0.587 + b * 0.114) / 255
+                
+                if gray < 0.3:
+                    dark_pixels += 1
+                elif gray > 0.7:
+                    light_pixels += 1
+                
+                # Simple color detection
+                if abs(r - g) > 30 or abs(g - b) > 30 or abs(r - b) > 30:
+                    color_pixels += 1
+        
+        total_samples = sample_size
+        return {
+            "dark_ratio": dark_pixels / total_samples if total_samples > 0 else 0,
+            "light_ratio": light_pixels / total_samples if total_samples > 0 else 0,
+            "color_ratio": color_pixels / total_samples if total_samples > 0 else 0
+        }
+    except Exception:
+        return {}
+
+
 def detect_cartoon_features(data: bytes) -> Optional[dict]:
-    """Simplified cartoon feature detection without PIL dependency."""
-    # For now, just return default regions based on image size
-    # In practice, we'd analyze the image data to detect features
-    return detect_cartoon_features_fallback(512, 512)  # Default image size
+    """Enhanced cartoon feature detection without PIL dependency."""
+    try:
+        # Get image dimensions
+        w, h = get_image_dimensions(data)
+        
+        # Analyze image content
+        content_info = analyze_image_content(data)
+        
+        # Use content analysis to adjust default regions
+        base_regions = detect_cartoon_features_fallback(w, h)
+        
+        # Adjust regions based on content analysis
+        if content_info.get("dark_ratio", 0) > 0.3:
+            # High contrast image, might need smaller eye regions
+            for eye in ["leftEye", "rightEye"]:
+                base_regions[eye]["w"] *= 0.8
+                base_regions[eye]["h"] *= 0.8
+                base_regions[eye]["rx"] *= 0.8
+                base_regions[eye]["ry"] *= 0.8
+        
+        if content_info.get("color_ratio", 0) > 0.5:
+            # Colorful image, might need larger mouth region
+            base_regions["mouth"]["w"] *= 1.2
+            base_regions["mouth"]["h"] *= 1.1
+            base_regions["mouth"]["rx"] *= 1.2
+            base_regions["mouth"]["ry"] *= 1.1
+        
+        # Ensure regions stay within image bounds
+        for region in base_regions.values():
+            region["x"] = max(0, min(region["x"], w - region["w"]))
+            region["y"] = max(0, min(region["y"], h - region["h"]))
+            region["w"] = max(20, min(region["w"], w - region["x"]))
+            region["h"] = max(20, min(region["h"], h - region["y"]))
+            region["cx"] = region["x"] + region["w"] / 2
+            region["cy"] = region["y"] + region["h"] / 2
+            region["rx"] = region["w"] / 2
+            region["ry"] = region["h"] / 2
+        
+        return base_regions
+        
+    except Exception as e:
+        # Final fallback
+        return detect_cartoon_features_fallback(512, 512)
 
 
 def box_to_poly(box: dict, w: int, h: int) -> list:
@@ -144,9 +273,16 @@ def sam_clip_fallback(data: bytes) -> Optional[list]:
     # The heavy models are not available in the execution environment.
     # This stub simply reuses the cartoon heuristic when present.
     features = detect_cartoon_features(data)
-    if not features:
+    if not features or not isinstance(features, dict):
         return None
-    w, h = 512, 512  # Default image size
+    
+    # Get actual image dimensions
+    w, h = get_image_dimensions(data)
+    
+    # Ensure all required keys exist
+    if not all(key in features for key in ["leftEye", "rightEye", "mouth"]):
+        return None
+    
     return [
         {"type": "eyeL", "poly": box_to_poly(features["leftEye"], w, h)},
         {"type": "eyeR", "poly": box_to_poly(features["rightEye"], w, h)},
@@ -191,23 +327,30 @@ async def rig_endpoint(
 
     rig = _RIG_CACHE.get(avatar_hash)
     if rig is None:
-        # Use simplified feature detection
+        # Use enhanced feature detection
         features = detect_cartoon_features(data)
         rig = None
-        if features:
-            w, h = 512, 512  # Default image size
-            rig = [
-                {"type": "eyeL", "poly": box_to_poly(features["leftEye"], w, h)},
-                {"type": "eyeR", "poly": box_to_poly(features["rightEye"], w, h)},
-                {"type": "mouth", "poly": box_to_poly(features["mouth"], w, h)},
-            ]
+        if features and isinstance(features, dict):
+            # Get actual image dimensions
+            w, h = get_image_dimensions(data)
+            
+            # Ensure all required keys exist
+            if all(key in features for key in ["leftEye", "rightEye", "mouth"]):
+                rig = [
+                    {"type": "eyeL", "poly": box_to_poly(features["leftEye"], w, h)},
+                    {"type": "eyeR", "poly": box_to_poly(features["rightEye"], w, h)},
+                    {"type": "mouth", "poly": box_to_poly(features["mouth"], w, h)},
+                ]
+        
         if not rig:
             rig = sam_clip_fallback(data)
+        
         if not rig:
+            # Final fallback with better proportions
             rig = [
-                {"type": "eyeL", "poly": [[0.3, 0.35], [0.4, 0.35], [0.4, 0.45], [0.3, 0.45]]},
-                {"type": "eyeR", "poly": [[0.6, 0.35], [0.7, 0.35], [0.7, 0.45], [0.6, 0.45]]},
-                {"type": "mouth", "poly": [[0.4, 0.65], [0.6, 0.65], [0.6, 0.75], [0.4, 0.75]]},
+                {"type": "eyeL", "poly": [[0.25, 0.35], [0.4, 0.35], [0.4, 0.47], [0.25, 0.47]]},
+                {"type": "eyeR", "poly": [[0.6, 0.35], [0.75, 0.35], [0.75, 0.47], [0.6, 0.47]]},
+                {"type": "mouth", "poly": [[0.35, 0.65], [0.65, 0.65], [0.65, 0.8], [0.35, 0.8]]},
             ]
 
     cache_file.write_text(json.dumps(rig))

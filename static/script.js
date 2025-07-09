@@ -393,6 +393,50 @@ function handleFaceDetectionResult(blendshapes, landmarks) {
     }
 }
 
+function drawDetectedRegions(regions, color = '#00ff00') {
+    if (!regions || !debugCtx) return;
+    
+    debugCtx.strokeStyle = color;
+    debugCtx.lineWidth = 2;
+    debugCtx.font = '12px Arial';
+    debugCtx.fillStyle = color;
+    
+    Object.entries(regions).forEach(([name, region]) => {
+        if (region && region.x !== undefined && region.y !== undefined && region.w && region.h) {
+            // Draw region rectangle
+            debugCtx.strokeRect(region.x, region.y, region.w, region.h);
+            
+            // Draw center point
+            if (region.cx !== undefined && region.cy !== undefined) {
+                debugCtx.beginPath();
+                debugCtx.arc(region.cx, region.cy, 3, 0, 2 * Math.PI);
+                debugCtx.fill();
+            }
+            
+            // Label the region
+            const labelText = name.replace('Eye', ' Eye').replace('mouth', 'Mouth');
+            debugCtx.fillText(labelText, region.x + 5, region.y - 5);
+        }
+    });
+}
+
+function getDefaultRegions(w, h) {
+    return {
+        leftEye: {
+            x: w * 0.25, y: h * 0.35, w: w * 0.15, h: h * 0.12,
+            cx: w * 0.325, cy: h * 0.41, rx: w * 0.075, ry: h * 0.06
+        },
+        rightEye: {
+            x: w * 0.6, y: h * 0.35, w: w * 0.15, h: h * 0.12,
+            cx: w * 0.675, cy: h * 0.41, rx: w * 0.075, ry: h * 0.06
+        },
+        mouth: {
+            x: w * 0.35, y: h * 0.65, w: w * 0.3, h: h * 0.15,
+            cx: w * 0.5, cy: h * 0.725, rx: w * 0.15, ry: h * 0.075
+        }
+    };
+}
+
 async function tryAutoDetection() {
     console.log('[spromoji] Starting enhanced facial feature detection...');
     updateStatus('Detecting facial features...');
@@ -401,6 +445,7 @@ async function tryAutoDetection() {
 
     try {
         avatarRegions = null;
+        let detectionMethod = 'none';
 
         // Enhanced MediaPipe detection on the avatar image
         if (avatarMesh) {
@@ -416,25 +461,33 @@ async function tryAutoDetection() {
                     
                     avatarRegions = window.AutoRegions.fromLandmarks(landmarks, avatarCanvas.width, avatarCanvas.height);
                     
-                    // Visualize detected landmarks on debug canvas
-                    if (debugCanvas.style.display !== 'none') {
-                        debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
-                        debugCtx.fillStyle = '#00ff00';
-                        landmarks.forEach((point, index) => {
-                            const x = point.x * avatarCanvas.width;
-                            const y = point.y * avatarCanvas.height;
-                            debugCtx.beginPath();
-                            debugCtx.arc(x, y, 2, 0, 2 * Math.PI);
-                            debugCtx.fill();
+                    if (avatarRegions) {
+                        detectionMethod = 'MediaPipe';
+                        console.log('[spromoji] MediaPipe detection successful');
+                        
+                        // Visualize detected landmarks on debug canvas
+                        if (debugCanvas.style.display !== 'none') {
+                            debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+                            debugCtx.fillStyle = '#00ff00';
+                            landmarks.forEach((point, index) => {
+                                const x = point.x * avatarCanvas.width;
+                                const y = point.y * avatarCanvas.height;
+                                debugCtx.beginPath();
+                                debugCtx.arc(x, y, 2, 0, 2 * Math.PI);
+                                debugCtx.fill();
+                                
+                                // Label key landmarks for debugging
+                                if ([33, 7, 163, 362, 398, 384, 61, 291, 13, 14].includes(index)) {
+                                    debugCtx.fillStyle = '#ff0000';
+                                    debugCtx.font = '10px Arial';
+                                    debugCtx.fillText(index.toString(), x + 3, y - 3);
+                                    debugCtx.fillStyle = '#00ff00';
+                                }
+                            });
                             
-                            // Label key landmarks
-                            if ([33, 263, 1, 61, 291, 13, 14].includes(index)) {
-                                debugCtx.fillStyle = '#ff0000';
-                                debugCtx.font = '10px Arial';
-                                debugCtx.fillText(index.toString(), x + 3, y - 3);
-                                debugCtx.fillStyle = '#00ff00';
-                            }
-                        });
+                            // Draw detected regions
+                            drawDetectedRegions(avatarRegions, '#00ff00');
+                        }
                     }
                 }
             } catch (error) {
@@ -445,14 +498,29 @@ async function tryAutoDetection() {
         // Enhanced fallback to heuristic detection
         if (!avatarRegions) {
             console.log('[spromoji] MediaPipe failed, trying enhanced heuristic detection...');
+            updateStatus('Trying advanced image analysis...');
+            
             const cartoonRegions = window.AutoRegions.detectCartoonFeatures(avatarCanvas);
             if (cartoonRegions) {
                 avatarRegions = cartoonRegions;
+                detectionMethod = 'heuristic';
                 console.log('[spromoji] Enhanced heuristic detection succeeded');
+                
+                // Visualize detected regions
+                if (debugCanvas.style.display !== 'none') {
+                    drawDetectedRegions(avatarRegions, '#ffff00');
+                }
             }
         }
 
         if (avatarRegions) {
+            // Validate and enhance detected regions
+            if (!window.AutoRegions.validateRegions(avatarRegions, avatarCanvas.width, avatarCanvas.height)) {
+                console.warn('[spromoji] Detected regions failed validation, using defaults');
+                avatarRegions = getDefaultRegions(avatarCanvas.width, avatarCanvas.height);
+                detectionMethod = 'default';
+            }
+            
             // Enhance detected regions with better bounds
             Object.values(avatarRegions).forEach(r => {
                 r.w = Math.max(r.w, 30);
@@ -463,11 +531,12 @@ async function tryAutoDetection() {
                 if (r.ry) r.ry = r.h / 2;
             });
             
+            console.log(`[spromoji] Detection successful using ${detectionMethod} method`);
             console.table(avatarRegions);
 
             if (currentAvatarHash) {
                 const cacheKey = 'rigCache_' + currentAvatarHash;
-                localStorage.setItem(cacheKey, JSON.stringify({regions: avatarRegions}));
+                localStorage.setItem(cacheKey, JSON.stringify({regions: avatarRegions, method: detectionMethod}));
             }
             
             if (window.RegionAnimator) {
@@ -479,8 +548,7 @@ async function tryAutoDetection() {
             }
             
             animationEnabled = true;
-            debugCanvas.style.display = 'none';
-            updateStatus('Face detected - try making expressions!');
+            updateStatus(`Face detected (${detectionMethod}) - try making expressions!`);
 
             playDemo();
             await initPreview();
