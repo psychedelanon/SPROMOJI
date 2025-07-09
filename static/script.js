@@ -18,9 +18,26 @@ let currentAvatarHash = null;
 let lastFrameTime = 0;
 let frameCount = 0;
 let lastLogTime = 0;
+let faceWorker = null;
+let isUsingWorker = false;
 
 // Smoothing factor for landmark interpolation (0=no smoothing, 1=ignore new data)
-const LANDMARK_SMOOTHING = 0.6;
+const LANDMARK_SMOOTHING = 0.3;
+
+// Enhanced face detection parameters
+const FACE_DETECTION_CONFIG = {
+    baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+        delegate: 'GPU'
+    },
+    outputFaceBlendshapes: true,
+    outputFacialTransformationMatrixes: true,
+    runningMode: 'VIDEO',
+    numFaces: 1,
+    minFaceDetectionConfidence: 0.5,
+    minFacePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5
+};
 
 async function computeAvatarHash(canvas){
     const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
@@ -276,6 +293,50 @@ async function initializeMediaPipe() {
     try {
         console.log('[spromoji] Loading MediaPipe...');
         
+        // Try to use the web worker first for better performance
+        if (window.Worker && !isUsingWorker) {
+            try {
+                faceWorker = new Worker('/static/faceWorker.js', { type: 'module' });
+                
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        reject(new Error('Worker initialization timeout'));
+                    }, 5000);
+                    
+                    faceWorker.onmessage = (event) => {
+                        if (event.data.type === 'ready') {
+                            clearTimeout(timeout);
+                            isUsingWorker = true;
+                            console.log('[spromoji] Face worker initialized successfully');
+                            resolve();
+                        } else if (event.data.type === 'blend') {
+                            // Handle face detection results from worker
+                            handleFaceDetectionResult(event.data.blend, event.data.lm);
+                        }
+                    };
+                    
+                    faceWorker.onerror = (error) => {
+                        clearTimeout(timeout);
+                        console.warn('[spromoji] Face worker failed:', error);
+                        reject(error);
+                    };
+                });
+                
+                if (isUsingWorker) {
+                    console.log('[spromoji] Using web worker for face detection');
+                    return;
+                }
+            } catch (error) {
+                console.warn('[spromoji] Web worker failed, falling back to main thread:', error);
+                isUsingWorker = false;
+                if (faceWorker) {
+                    faceWorker.terminate();
+                    faceWorker = null;
+                }
+            }
+        }
+        
+        // Fallback to main thread MediaPipe
         const { FaceLandmarker, FilesetResolver } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs');
         
         console.log('[spromoji] MediaPipe loaded, creating instances...');
@@ -287,28 +348,18 @@ async function initializeMediaPipe() {
         
         console.log('[spromoji] FilesetResolver created');
         
+        // Create avatar mesh for static image analysis
         avatarMesh = await FaceLandmarker.createFromOptions(filesetResolver, {
-            baseOptions: {
-                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-                delegate: 'CPU'
-            },
-            outputFaceBlendshapes: true,
-            outputFacialTransformationMatrixes: false,
-            runningMode: 'IMAGE',
-            numFaces: 1
+            ...FACE_DETECTION_CONFIG,
+            runningMode: 'IMAGE'
         });
         
         console.log('[spromoji] Avatar mesh created');
         
+        // Create live mesh for video analysis
         liveMesh = await FaceLandmarker.createFromOptions(filesetResolver, {
-            baseOptions: {
-                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-                delegate: 'CPU'
-            },
-            outputFaceBlendshapes: true,
-            outputFacialTransformationMatrixes: false,
-            runningMode: 'VIDEO',
-            numFaces: 1
+            ...FACE_DETECTION_CONFIG,
+            runningMode: 'VIDEO'
         });
         
         console.log('[spromoji] MediaPipe fully initialized');
@@ -320,8 +371,30 @@ async function initializeMediaPipe() {
     }
 }
 
+function handleFaceDetectionResult(blendshapes, landmarks) {
+    if (!animationEnabled) return;
+    
+    const now = performance.now();
+    if (now - lastFrameTime >= 16) { // 60 FPS target
+        lastFrameTime = now;
+        
+        if (window.RegionAnimator) {
+            const blend = Object.fromEntries(blendshapes.map(c => [c.categoryName, c.score]));
+            window.RegionAnimator.update(blend, landmarks);
+        }
+        
+        frameCount++;
+        
+        if (now - lastLogTime > 1000) {
+            console.log('[spromoji] ACTIVE - FPS:', frameCount, 'Landmarks:', landmarks ? landmarks.length : 0);
+            frameCount = 0;
+            lastLogTime = now;
+        }
+    }
+}
+
 async function tryAutoDetection() {
-    console.log('[spromoji] Starting facial feature detection...');
+    console.log('[spromoji] Starting enhanced facial feature detection...');
     updateStatus('Detecting facial features...');
 
     debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
@@ -329,31 +402,61 @@ async function tryAutoDetection() {
     try {
         avatarRegions = null;
 
-        // First try MediaPipe detection on the avatar image
+        // Enhanced MediaPipe detection on the avatar image
         if (avatarMesh) {
-            console.log('[spromoji] Pre-flight MediaPipe detection...');
-            const mpRes = avatarMesh.detect(avatarCanvas);
-            if (mpRes && mpRes.faceLandmarks && mpRes.faceLandmarks.length > 0) {
-                const landmarks = mpRes.faceLandmarks[0];
-                console.log('[spromoji] MediaPipe detected', landmarks.length, 'landmarks');
-                avatarRegions = window.AutoRegions.fromLandmarks(landmarks, avatarCanvas.width, avatarCanvas.height);
+            console.log('[spromoji] Running MediaPipe face detection on avatar...');
+            try {
+                const mpRes = avatarMesh.detect(avatarCanvas);
+                if (mpRes && mpRes.faceLandmarks && mpRes.faceLandmarks.length > 0) {
+                    const landmarks = mpRes.faceLandmarks[0];
+                    const blendshapes = mpRes.faceBlendshapes[0];
+                    
+                    console.log('[spromoji] MediaPipe detected', landmarks.length, 'landmarks');
+                    console.log('[spromoji] Blendshapes available:', !!blendshapes);
+                    
+                    avatarRegions = window.AutoRegions.fromLandmarks(landmarks, avatarCanvas.width, avatarCanvas.height);
+                    
+                    // Visualize detected landmarks on debug canvas
+                    if (debugCanvas.style.display !== 'none') {
+                        debugCtx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+                        debugCtx.fillStyle = '#00ff00';
+                        landmarks.forEach((point, index) => {
+                            const x = point.x * avatarCanvas.width;
+                            const y = point.y * avatarCanvas.height;
+                            debugCtx.beginPath();
+                            debugCtx.arc(x, y, 2, 0, 2 * Math.PI);
+                            debugCtx.fill();
+                            
+                            // Label key landmarks
+                            if ([33, 263, 1, 61, 291, 13, 14].includes(index)) {
+                                debugCtx.fillStyle = '#ff0000';
+                                debugCtx.font = '10px Arial';
+                                debugCtx.fillText(index.toString(), x + 3, y - 3);
+                                debugCtx.fillStyle = '#00ff00';
+                            }
+                        });
+                    }
+                }
+            } catch (error) {
+                console.warn('[spromoji] MediaPipe detection failed:', error);
             }
         }
 
-        // If MediaPipe didn't work, fall back to heuristic detection
+        // Enhanced fallback to heuristic detection
         if (!avatarRegions) {
+            console.log('[spromoji] MediaPipe failed, trying enhanced heuristic detection...');
             const cartoonRegions = window.AutoRegions.detectCartoonFeatures(avatarCanvas);
             if (cartoonRegions) {
                 avatarRegions = cartoonRegions;
-                console.log('[spromoji] Cartoon heuristic succeeded');
+                console.log('[spromoji] Enhanced heuristic detection succeeded');
             }
         }
 
         if (avatarRegions) {
-            
+            // Enhance detected regions with better bounds
             Object.values(avatarRegions).forEach(r => {
-                r.w = Math.max(r.w, 20);
-                r.h = Math.max(r.h, 20);
+                r.w = Math.max(r.w, 30);
+                r.h = Math.max(r.h, 30);
                 if (r.radiusX) r.radiusX = r.w / 2;
                 if (r.radiusY) r.radiusY = r.h / 2;
                 if (r.rx) r.rx = r.w / 2;
@@ -368,8 +471,8 @@ async function tryAutoDetection() {
             }
             
             if (window.RegionAnimator) {
-                window.RegionAnimator.init(ctx, avatarImg, avatarRegions);
-                console.log('[spromoji] RegionAnimator initialized with cartoon regions');
+                await window.RegionAnimator.init(ctx, avatarImg, avatarRegions);
+                console.log('[spromoji] RegionAnimator initialized with detected regions');
             } else {
                 console.error('[spromoji] RegionAnimator not available!');
                 return false;
@@ -377,7 +480,7 @@ async function tryAutoDetection() {
             
             animationEnabled = true;
             debugCanvas.style.display = 'none';
-            updateStatus('Features detected - try blinking & talking!');
+            updateStatus('Face detected - try making expressions!');
 
             playDemo();
             await initPreview();
@@ -389,36 +492,42 @@ async function tryAutoDetection() {
             return true;
         }
 
+        // Server-side rig detection as last resort
         if (!avatarRegions) {
-            console.log('[spromoji] Heuristics failed - requesting rig from server...');
+            console.log('[spromoji] Local detection failed - requesting server analysis...');
             const {blob} = await prepareRigBlob(avatarCanvas);
             const form = new FormData();
             form.append('file', blob, 'avatar.png');
-            const resp = await fetch('/rig', { method:'POST', body: form });
-            if (resp.ok) {
-                const data = await resp.json();
-                if (data.rig) {
-                    if (currentAvatarHash) {
-                        const ck = 'rigCache_' + currentAvatarHash;
-                        localStorage.setItem(ck, JSON.stringify({rig: data.rig}));
+            
+            try {
+                const resp = await fetch('/rig', { method:'POST', body: form });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data.rig) {
+                        if (currentAvatarHash) {
+                            const ck = 'rigCache_' + currentAvatarHash;
+                            localStorage.setItem(ck, JSON.stringify({rig: data.rig}));
+                        }
+                        const regions = polysToRegions(data.rig);
+                        await window.RegionAnimator.init(ctx, avatarImg, regions);
+                        animationEnabled = true;
+                        debugCanvas.style.display = 'none';
+                        updateStatus('Face detected via server - try making expressions!');
+                        playDemo();
+                        if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
+                        await initPreview();
+                        if (!cam || !cam.srcObject) startBasicAnimation();
+                        return true;
                     }
-                    const regions = polysToRegions(data.rig);
-                    await window.RegionAnimator.init(ctx, avatarImg, regions);
-                    animationEnabled = true;
-                    debugCanvas.style.display = 'none';
-                    updateStatus('Features detected - try blinking & talking!');
-                    playDemo();
-                    if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
-                    await initPreview();
-                    if (!cam || !cam.srcObject) startBasicAnimation();
-                    return true;
                 }
+            } catch (error) {
+                console.error('[spromoji] Server rig detection failed:', error);
             }
         }
 
-        console.warn('[spromoji] Auto-detection failed');
+        console.warn('[spromoji] All detection methods failed');
         animationEnabled = false;
-        updateStatus('Auto-detection failed - please select features manually');
+        updateStatus('Face detection failed - please select features manually');
         if (manualModeBtn) manualModeBtn.style.display = 'inline-block';
         if (redoDetectBtn) redoDetectBtn.style.display = 'inline-block';
         return false;
@@ -590,17 +699,50 @@ async function initPreview() {
 }
 
 function startFaceTracking() {
-    if (!liveMesh || !animationEnabled) {
-        console.log('[spromoji] Cannot start tracking - missing:', {liveMesh: !!liveMesh, animationEnabled});
+    if ((!liveMesh && !isUsingWorker) || !animationEnabled) {
+        console.log('[spromoji] Cannot start tracking - missing:', {liveMesh: !!liveMesh, isUsingWorker, animationEnabled});
         return;
     }
 
-    console.log('[spromoji] Starting face tracking loop...');
+    console.log('[spromoji] Starting enhanced face tracking loop...');
 
     let gotLandmarks = false;
     let prevLandmarks = null;
     let prevBlend = {};
 
+    // Use worker-based tracking if available
+    if (isUsingWorker && faceWorker) {
+        console.log('[spromoji] Using worker-based face tracking');
+        
+        const workerTrackFace = () => {
+            if (cam.readyState === cam.HAVE_ENOUGH_DATA) {
+                try {
+                    // Create ImageBitmap for worker
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = cam.videoWidth;
+                    canvas.height = cam.videoHeight;
+                    ctx.drawImage(cam, 0, 0);
+                    
+                    createImageBitmap(canvas).then(bitmap => {
+                        faceWorker.postMessage({
+                            type: 'frame',
+                            bitmap: bitmap,
+                            ts: performance.now()
+                        }, [bitmap]);
+                    });
+                } catch (error) {
+                    console.error('[spromoji] Worker face tracking error:', error);
+                }
+            }
+            requestAnimationFrame(workerTrackFace);
+        };
+        
+        workerTrackFace();
+        return;
+    }
+
+    // Fallback to main thread tracking
     const trackFace = async () => {
         if (cam.readyState === cam.HAVE_ENOUGH_DATA) {
             try {
@@ -610,7 +752,7 @@ function startFaceTracking() {
                     let landmarks = results.faceLandmarks[0];
                     const blend = Object.fromEntries((results.faceBlendshapes[0]?.categories||[]).map(c=>[c.categoryName,c.score]));
 
-                    // Smooth landmark updates for fluid animation
+                    // Enhanced landmark smoothing with adaptive factor
                     if (prevLandmarks) {
                         const a = LANDMARK_SMOOTHING;
                         const b = 1 - a;
@@ -627,7 +769,7 @@ function startFaceTracking() {
                     gotLandmarks = true;
                     
                     const now = performance.now();
-                    if (now - lastFrameTime >= 33) {
+                    if (now - lastFrameTime >= 16) { // Target 60 FPS
                         lastFrameTime = now;
                         
                         window.lastLandmarks = landmarks;
@@ -645,6 +787,7 @@ function startFaceTracking() {
                         }
                     }
                 } else {
+                    // No face detected, use previous blend data
                     if (window.RegionAnimator) {
                         window.RegionAnimator.update(prevBlend, null);
                     }
